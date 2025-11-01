@@ -291,10 +291,10 @@
         "m_Expanded": true,
         "m_Position": {
             "serializedVersion": "2",
-            "x": -213.00001525878907,
-            "y": 136.0,
-            "width": 147.00003051757813,
-            "height": 33.999969482421878
+            "x": -168.00001525878907,
+            "y": 38.39998245239258,
+            "width": 148.00006103515626,
+            "height": 33.60001754760742
         }
     },
     "m_Slots": [
@@ -349,7 +349,7 @@
         "HLSL"
     ],
     "m_Precision": 0,
-    "m_PreviewExpanded": true,
+    "m_PreviewExpanded": false,
     "m_DismissedVersion": 0,
     "m_PreviewMode": 0,
     "m_CustomColors": {
@@ -374,10 +374,10 @@
         "m_Expanded": true,
         "m_Position": {
             "serializedVersion": "2",
-            "x": -510.0,
-            "y": -103.0,
-            "width": 206.0,
-            "height": 131.0
+            "x": -456.800048828125,
+            "y": -25.599998474121095,
+            "width": 206.39999389648438,
+            "height": 128.0
         }
     },
     "m_Slots": [
@@ -440,10 +440,10 @@
         "m_Expanded": true,
         "m_Position": {
             "serializedVersion": "2",
-            "x": -451.0,
-            "y": -157.99998474121095,
-            "width": 119.0,
-            "height": 34.000022888183597
+            "x": -371.2000427246094,
+            "y": -59.19999313354492,
+            "width": 119.99996948242188,
+            "height": 33.59999465942383
         }
     },
     "m_Slots": [
@@ -557,10 +557,10 @@
         "m_Expanded": true,
         "m_Position": {
             "serializedVersion": "2",
-            "x": -278.0000305175781,
-            "y": -197.99998474121095,
-            "width": 208.00006103515626,
-            "height": 326.0
+            "x": -227.19996643066407,
+            "y": -103.20000457763672,
+            "width": 207.20001220703126,
+            "height": 141.6000213623047
         }
     },
     "m_Slots": [
@@ -579,7 +579,7 @@
     ],
     "synonyms": [],
     "m_Precision": 0,
-    "m_PreviewExpanded": true,
+    "m_PreviewExpanded": false,
     "m_DismissedVersion": 0,
     "m_PreviewMode": 0,
     "m_CustomColors": {

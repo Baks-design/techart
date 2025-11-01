@@ -67,5 +67,6 @@
         "*.sln": "*.csproj",
         "*.slnx": "*.csproj"
     },
-    "dotnet.defaultSolution": "techart.slnx"
+    "dotnet.defaultSolution": "techart.slnx",
+    "editor.formatOnType": true
 }

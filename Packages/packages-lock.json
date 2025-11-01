@@ -1,5 +1,12 @@
 {
   "dependencies": {
+    "com.siestagames.urpplanarreflections": {
+      "version": "https://github.com/Siesta-Games/URP-PlanarReflections.git",
+      "depth": 0,
+      "source": "git",
+      "dependencies": {},
+      "hash": "1ec288e2040a754b425fd0fc6aa6290d0014310b"
+    },
     "com.unity.burst": {
       "version": "1.8.25",
       "depth": 2,

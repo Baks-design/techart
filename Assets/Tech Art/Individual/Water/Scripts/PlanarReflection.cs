@@ -5,23 +5,29 @@ using System;
 using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.Rendering.Universal;
+using Object = UnityEngine.Object;
 
 [ExecuteAlways, DisallowMultipleComponent, AddComponentMenu("Effects/Planar Reflection Volume")]
 public class PlanarReflectionVolume : MonoBehaviour
 {
-    [Header("Planar Settings")]
-    [Range(0.01f, 1f)] public float renderScale = 1f;
-    public LayerMask reflectionLayer = -1;
-    public bool reflectSkybox = true;
-    public GameObject reflectionTarget;
-    [Range(-2f, 3f)] public float reflectionPlaneOffset;
-    public bool hideReflectionCamera;
+    [Header("Reflection Settings")]
+    [SerializeField] private GameObject reflectionTarget;
+    [SerializeField] private LayerMask reflectionLayer = -1;
+    [SerializeField, Range(0.01f, 1f)] private float renderScale = 1f;
+    [SerializeField] private bool hideReflectionCamera = true;
+    [SerializeField] private bool reflectSkybox = true;
+    [SerializeField, Range(-2f, 3f)] private float reflectionPlaneOffset = 0f;
 
     [Header("Volume Settings")]
-    public Vector3 volumeSize = new(10f, 10f, 10f);
-    [Min(0f)] public float blendDistance = 2f;
+    [SerializeField] private Vector3 volumeSize = new(10f, 10f, 10f);
+    [SerializeField, Min(0f)] private float blendDistance = 2f;
 
+    private bool _wasInRange;
+    private Transform _transform;
+    private Vector3 _halfSize;
+    private Vector3 _blendHalfSize;
     private Material _targetMaterial;
+    private Renderer _targetRenderer;
     private RenderTextureDescriptor _previousDescriptor;
     private static Camera _reflectionCamera;
     private static RenderTexture _reflectionTexture;
@@ -30,302 +36,346 @@ public class PlanarReflectionVolume : MonoBehaviour
 
     public static event Action<ScriptableRenderContext, Camera> BeginPlanarReflections;
 
-    private void OnValidate() => UpdateBounds();
+    private void OnValidate()
+    {
+        CacheVolumeBounds();
 
-    private void UpdateBounds() => new Bounds(transform.position, volumeSize);
+        if (_targetRenderer == null || _targetRenderer.gameObject != reflectionTarget)
+            UpdateTargetMaterial();
+    }
+
+    private void Awake()
+    {
+        _transform = transform;
+        CacheVolumeBounds();
+    }
 
     private void OnEnable()
     {
         RenderPipelineManager.beginCameraRendering += DoPlanarReflections;
+        reflectionLayer = ~(1 << 4); // Exclude layer 4
+        CacheVolumeBounds();
+        UpdateTargetMaterial();
+    }
 
-        reflectionLayer = ~(1 << 4);
-
-        UpdateBounds();
-
-        // Get the material from the reflection target
-        if (reflectionTarget != null && reflectionTarget.TryGetComponent<Renderer>(out var renderer))
-            _targetMaterial = renderer.sharedMaterial;
+    private void CacheVolumeBounds()
+    {
+        _halfSize = volumeSize * 0.5f;
+        var blendExpansion = new Vector3(blendDistance, blendDistance, blendDistance);
+        _blendHalfSize = _halfSize + blendExpansion;
     }
 
     private void OnDisable()
     {
-        CleanUp();
-
         RenderPipelineManager.beginCameraRendering -= DoPlanarReflections;
-
-        // Reset blend parameter on the specific material when disabled
-        if (_targetMaterial != null)
-            _targetMaterial.SetFloat(_planarReflectionBlendId, 1f);
+        CleanUp();
+        ResetMaterialBlend();
     }
 
     private void OnDestroy()
     {
-        CleanUp();
-
         RenderPipelineManager.beginCameraRendering -= DoPlanarReflections;
-
-        // Reset blend parameter on the specific material when destroyed
-        if (_targetMaterial != null)
-            _targetMaterial.SetFloat(_planarReflectionBlendId, 1f);
-    }
-
-    private void UpdateTargetMaterial()
-    {
-        if (reflectionTarget == null ||
-            _targetMaterial != null ||
-            !reflectionTarget.TryGetComponent<Renderer>(out var renderer))
-            return;
-
-        _targetMaterial = renderer.sharedMaterial;
-    }
-
-
-    private float GetBlendFactor(Camera camera)
-    {
-        if (blendDistance <= 0f) return IsCameraInVolume(camera) ? 0f : 1f;
-
-        // Transform camera position to local space
-        var cameraLocalPos = transform.InverseTransformPoint(camera.transform.position);
-        var halfSize = volumeSize * 0.5f;
-
-        // Calculate distance from each boundary
-        var distanceX = Mathf.Max(0f, Mathf.Abs(cameraLocalPos.x) - halfSize.x);
-        var distanceY = Mathf.Max(0f, Mathf.Abs(cameraLocalPos.y) - halfSize.y);
-        var distanceZ = Mathf.Max(0f, Mathf.Abs(cameraLocalPos.z) - halfSize.z);
-
-        // Get the maximum distance from any boundary
-        var maxDistance = Mathf.Max(distanceX, Mathf.Max(distanceY, distanceZ));
-        // If inside volume
-        if (maxDistance <= 0f) return 0f;
-
-        // Calculate blend factor
-        return Mathf.Clamp01(maxDistance / blendDistance);
-    }
-
-    private bool IsCameraInRange(Camera camera)
-    {
-        var cameraLocalPos = transform.InverseTransformPoint(camera.transform.position);
-        var halfSize = volumeSize * 0.5f + new Vector3(blendDistance, blendDistance, blendDistance);
-        return Mathf.Abs(cameraLocalPos.x) <= halfSize.x &&
-               Mathf.Abs(cameraLocalPos.y) <= halfSize.y &&
-               Mathf.Abs(cameraLocalPos.z) <= halfSize.z;
-    }
-
-    private bool IsCameraInVolume(Camera camera)
-    {
-        var cameraLocalPos = transform.InverseTransformPoint(camera.transform.position);
-        var halfSize = volumeSize * 0.5f;
-        return Mathf.Abs(cameraLocalPos.x) <= halfSize.x &&
-               Mathf.Abs(cameraLocalPos.y) <= halfSize.y &&
-               Mathf.Abs(cameraLocalPos.z) <= halfSize.z;
+        CleanUp();
+        ResetMaterialBlend();
     }
 
     private void CleanUp()
     {
-        if (_reflectionCamera)
+        if (_reflectionCamera != null)
         {
             _reflectionCamera.targetTexture = null;
             SafeDestroyObject(_reflectionCamera.gameObject);
+            _reflectionCamera = null;
         }
 
-        if (_reflectionTexture)
+        if (_reflectionTexture != null)
+        {
             RenderTexture.ReleaseTemporary(_reflectionTexture);
+            _reflectionTexture = null;
+        }
     }
 
-    private void SafeDestroyObject(UnityEngine.Object obj)
+    private void SafeDestroyObject(Object obj)
     {
+        if (obj == null) return;
+
         if (Application.isEditor)
             DestroyImmediate(obj);
         else
             Destroy(obj);
     }
 
-    private void UpdateReflectionCamera(Camera realCamera)
+    private void ResetMaterialBlend()
     {
-        if (_reflectionCamera == null)
-            _reflectionCamera = InitializeReflectionCamera();
-        else if (_reflectionCamera.gameObject.hideFlags != (hideReflectionCamera 
-            ? HideFlags.HideAndDontSave : HideFlags.DontSave))
-        {
-            // Update hide flags if they've changed
-            _reflectionCamera.gameObject.hideFlags = hideReflectionCamera 
-                ? HideFlags.HideAndDontSave : HideFlags.DontSave;
-#if UNITY_EDITOR
-            // Force update the hierarchy in editor
-            EditorApplication.DirtyHierarchyWindowSorting();
-#endif
-        }
-
-        var pos = Vector3.zero;
-        var normal = Vector3.up;
-
-        if (reflectionTarget != null)
-        {
-            pos = reflectionTarget.transform.position + Vector3.up * reflectionPlaneOffset;
-            normal = reflectionTarget.transform.up;
-        }
-
-        UpdateCamera(realCamera, _reflectionCamera);
-        _reflectionCamera.gameObject.hideFlags = hideReflectionCamera 
-            ? HideFlags.HideAndDontSave : HideFlags.DontSave;
-
-        var d = -Vector3.Dot(normal, pos);
-        var reflectionPlane = new Vector4(normal.x, normal.y, normal.z, d);
-
-        var reflection = Matrix4x4.identity;
-        reflection *= Matrix4x4.Scale(new Vector3(1f, -1f, 1f));
-
-        CalculateReflectionMatrix(ref reflection, reflectionPlane);
-        var oldPosition = realCamera.transform.position - new Vector3(0f, pos.y * 2f, 0f);
-        var newPosition = ReflectPosition(oldPosition);
-        _reflectionCamera.transform.forward = Vector3.Scale(realCamera.transform.forward, new Vector3(1f, -1f, 1f));
-        _reflectionCamera.worldToCameraMatrix = realCamera.worldToCameraMatrix * reflection;
-
-        var clipPlane = CameraSpacePlane(_reflectionCamera, pos - Vector3.up * 0.1f, normal, 1f);
-        var projection = realCamera.CalculateObliqueMatrix(clipPlane);
-        _reflectionCamera.projectionMatrix = projection;
-        _reflectionCamera.cullingMask = reflectionLayer;
-        _reflectionCamera.transform.position = newPosition;
-    }
-
-    private static Vector3 ReflectPosition(Vector3 pos)
-    {
-        var reflectPos = new Vector3(pos.x, -pos.y, pos.z);
-        return reflectPos;
-    }
-
-    private void UpdateCamera(Camera src, Camera dest)
-    {
-        if (dest == null) return;
-
-        dest.CopyFrom(src);
-        dest.useOcclusionCulling = false;
-        if (dest.gameObject.TryGetComponent(out UniversalAdditionalCameraData camData))
-        {
-            camData.renderShadows = false;
-            if (reflectSkybox)
-                dest.clearFlags = CameraClearFlags.Skybox;
-            else
-            {
-                dest.clearFlags = CameraClearFlags.SolidColor;
-                dest.backgroundColor = Color.black;
-            }
-        }
-    }
-
-    private Camera InitializeReflectionCamera()
-    {
-        var go = new GameObject("", typeof(Camera));
-        go.name = "Reflection Camera [" + go.GetInstanceID() + "]";
-
-        var camData = go.AddComponent(typeof(UniversalAdditionalCameraData)) as UniversalAdditionalCameraData;
-        camData.requiresColorOption = CameraOverrideOption.Off;
-        camData.requiresDepthOption = CameraOverrideOption.Off;
-        camData.SetRenderer(0);
-
-        var t = transform;
-        var reflectionCamera = go.GetComponent<Camera>();
-        reflectionCamera.transform.SetPositionAndRotation(t.position, t.rotation);
-        reflectionCamera.depth = -10f;
-        reflectionCamera.enabled = false;
-        return reflectionCamera;
-    }
-
-    private Vector4 CameraSpacePlane(Camera cam, Vector3 pos, Vector3 normal, float sideSign)
-    {
-        var m = cam.worldToCameraMatrix;
-        var cameraPosition = m.MultiplyPoint(pos);
-        var cameraNormal = m.MultiplyVector(normal).normalized * sideSign;
-        return new Vector4(cameraNormal.x, cameraNormal.y, cameraNormal.z, -Vector3.Dot(cameraPosition, cameraNormal));
-    }
-
-    private RenderTextureDescriptor GetDescriptor(Camera camera, float pipelineRenderScale)
-    {
-        var width = (int)Mathf.Max(camera.pixelWidth * pipelineRenderScale * renderScale);
-        var height = (int)Mathf.Max(camera.pixelHeight * pipelineRenderScale * renderScale);
-        var hdr = camera.allowHDR;
-        var renderTextureFormat = hdr ? RenderTextureFormat.DefaultHDR : RenderTextureFormat.Default;
-        return new RenderTextureDescriptor(width, height, renderTextureFormat, 16)
-        {
-            autoGenerateMips = true,
-            useMipMap = true
-        };
-    }
-
-    private void CreateReflectionTexture(Camera camera)
-    {
-        var descriptor = GetDescriptor(camera, UniversalRenderPipeline.asset.renderScale);
-
-        if (_reflectionTexture == null)
-        {
-            _reflectionTexture = RenderTexture.GetTemporary(descriptor);
-            _previousDescriptor = descriptor;
-        }
-        else if (!descriptor.Equals(_previousDescriptor))
-        {
-            if (_reflectionTexture) RenderTexture.ReleaseTemporary(_reflectionTexture);
-
-            _reflectionTexture = RenderTexture.GetTemporary(descriptor);
-            _previousDescriptor = descriptor;
-        }
-        _reflectionCamera.targetTexture = _reflectionTexture;
+        if (_targetMaterial == null) return;
+        _targetMaterial.SetFloat(_planarReflectionBlendId, 1f);
     }
 
     private void DoPlanarReflections(ScriptableRenderContext context, Camera camera)
     {
-        if (camera.cameraType == CameraType.Reflection ||
-            camera.cameraType == CameraType.Preview ||
-            !reflectionTarget) return;
+        if (ShouldSkipRender(camera)) return;
 
-        // Update material reference if needed
         UpdateTargetMaterial();
         if (_targetMaterial == null) return;
 
-        // Check if camera is in range (volume + blend distance)
-        if (!IsCameraInRange(camera))
+        var isInRange = IsCameraInRange(camera);
+        var blendFactor = GetBlendFactor(camera);
+
+        if (!isInRange && _wasInRange)
         {
             _targetMaterial.SetFloat(_planarReflectionBlendId, 1f);
+            _wasInRange = false;
             return;
         }
 
-        // Calculate and set blend factor on the specific material
-        var blendFactor = GetBlendFactor(camera);
         _targetMaterial.SetFloat(_planarReflectionBlendId, blendFactor);
-        // If fully blended to probe reflections, don't render planar reflection
+        _wasInRange = isInRange;
+
         if (blendFactor >= 1f) return;
 
         UpdateReflectionCamera(camera);
         CreateReflectionTexture(camera);
 
-        var data = new PlanarReflectionSettingData();
-        data.Set();
-        BeginPlanarReflections?.Invoke(context, _reflectionCamera);
+        if (_reflectionTexture == null || _reflectionCamera == null) return;
 
-        if (_reflectionCamera.WorldToViewportPoint(reflectionTarget.transform.position).z < 100000f)
-#pragma warning disable CS0618 
-            UniversalRenderPipeline.RenderSingleCamera(context, _reflectionCamera);
+#if UNITY_EDITOR
+        if (!IsValidForRendering(_reflectionCamera))
+            return;
+#endif
+
+        using (var settings = new PlanarReflectionSettingData())
+        {
+            BeginPlanarReflections?.Invoke(context, _reflectionCamera);
+
+            if (ShouldRenderReflectionTarget())
+            {
+                try
+                {
+#pragma warning disable CS0618
+                    UniversalRenderPipeline.RenderSingleCamera(context, _reflectionCamera);
 #pragma warning restore CS0618
+                }
+                catch (Exception e)
+                {
+                    Debug.LogWarning($"Failed to render planar reflection: {e.Message}");
+                }
+            }
+        }
 
-        data.Restore();
         Shader.SetGlobalTexture(_planarReflectionTextureId, _reflectionTexture);
     }
 
-    public static void CalculateReflectionMatrix(ref Matrix4x4 reflectionMatrix, Vector4 plane)
+    private bool ShouldSkipRender(Camera camera)
+    => camera == null ||
+        camera.cameraType == CameraType.Reflection ||
+        camera.cameraType == CameraType.Preview ||
+        camera.cameraType == CameraType.SceneView ||
+        reflectionTarget == null;
+
+    private void UpdateTargetMaterial()
     {
-        reflectionMatrix.m00 = 1F - 2F * plane[0] * plane[0];
-        reflectionMatrix.m01 = -2F * plane[0] * plane[1];
-        reflectionMatrix.m02 = -2F * plane[0] * plane[2];
-        reflectionMatrix.m03 = -2F * plane[3] * plane[0];
+        _targetMaterial = null;
+        _targetRenderer = null;
 
-        reflectionMatrix.m10 = -2F * plane[1] * plane[0];
-        reflectionMatrix.m11 = 1F - 2F * plane[1] * plane[1];
-        reflectionMatrix.m12 = -2F * plane[1] * plane[2];
-        reflectionMatrix.m13 = -2F * plane[3] * plane[1];
+        if (reflectionTarget == null) return;
 
-        reflectionMatrix.m20 = -2F * plane[2] * plane[0];
-        reflectionMatrix.m21 = -2F * plane[2] * plane[1];
-        reflectionMatrix.m22 = 1F - 2F * plane[2] * plane[2];
-        reflectionMatrix.m23 = -2F * plane[3] * plane[2];
+        if (reflectionTarget.TryGetComponent(out _targetRenderer))
+            _targetMaterial = _targetRenderer.sharedMaterial;
+    }
+
+    private bool IsCameraInRange(Camera camera)
+    {
+        if (camera == null) return false;
+
+        var cameraLocalPos = _transform.InverseTransformPoint(camera.transform.position);
+
+        return Mathf.Abs(cameraLocalPos.x) <= _blendHalfSize.x &&
+               Mathf.Abs(cameraLocalPos.y) <= _blendHalfSize.y &&
+               Mathf.Abs(cameraLocalPos.z) <= _blendHalfSize.z;
+    }
+
+    private float GetBlendFactor(Camera camera)
+    {
+        if (camera == null) return 1f;
+
+        if (blendDistance <= 0f) return IsCameraInVolume(camera) ? 0f : 1f;
+
+        var cameraLocalPos = _transform.InverseTransformPoint(camera.transform.position);
+
+        var distanceX = Mathf.Max(0f, Mathf.Abs(cameraLocalPos.x) - _halfSize.x);
+        var distanceY = Mathf.Max(0f, Mathf.Abs(cameraLocalPos.y) - _halfSize.y);
+        var distanceZ = Mathf.Max(0f, Mathf.Abs(cameraLocalPos.z) - _halfSize.z);
+
+        var maxDistance = Mathf.Max(distanceX, Mathf.Max(distanceY, distanceZ));
+        if (maxDistance <= 0f) return 0f;
+
+        return Mathf.Clamp01(maxDistance / blendDistance);
+    }
+
+    private bool IsCameraInVolume(Camera camera)
+    {
+        if (camera == null) return false;
+
+        var cameraLocalPos = _transform.InverseTransformPoint(camera.transform.position);
+
+        return Mathf.Abs(cameraLocalPos.x) <= _halfSize.x &&
+               Mathf.Abs(cameraLocalPos.y) <= _halfSize.y &&
+               Mathf.Abs(cameraLocalPos.z) <= _halfSize.z;
+    }
+
+    private void UpdateReflectionCamera(Camera realCamera)
+    {
+        if (realCamera == null) return;
+
+        if (_reflectionCamera == null)
+            _reflectionCamera = InitializeReflectionCamera();
+
+        UpdateCameraHideFlags();
+        UpdateCamera(realCamera, _reflectionCamera);
+
+        var reflectionTransform = reflectionTarget != null ? reflectionTarget.transform : _transform;
+        var pos = reflectionTransform.position + reflectionTransform.up * reflectionPlaneOffset;
+        var normal = reflectionTransform.up;
+
+        var d = -Vector3.Dot(normal, pos);
+        var reflectionPlane = new Vector4(normal.x, normal.y, normal.z, d);
+
+        var reflection = Matrix4x4.Scale(new Vector3(1f, -1f, 1f));
+        CalculateReflectionMatrix(ref reflection, reflectionPlane);
+
+        var oldPosition = realCamera.transform.position - new Vector3(0f, pos.y * 2f, 0f);
+        _reflectionCamera.transform.position = ReflectPosition(oldPosition);
+        _reflectionCamera.transform.forward = Vector3.Scale(realCamera.transform.forward, new Vector3(1f, -1f, 1f));
+        _reflectionCamera.worldToCameraMatrix = realCamera.worldToCameraMatrix * reflection;
+
+        var clipPlane = CameraSpacePlane(_reflectionCamera, pos - Vector3.up * 0.1f, normal, 1f);
+        _reflectionCamera.projectionMatrix = realCamera.CalculateObliqueMatrix(clipPlane);
+        _reflectionCamera.cullingMask = reflectionLayer;
+    }
+
+    private void CreateReflectionTexture(Camera camera)
+    {
+        if (camera == null || _reflectionCamera == null) return;
+
+        var descriptor = GetDescriptor(camera);
+
+        if (_reflectionTexture == null || !descriptor.Equals(_previousDescriptor))
+        {
+            if (_reflectionTexture != null)
+                RenderTexture.ReleaseTemporary(_reflectionTexture);
+
+            _reflectionTexture = RenderTexture.GetTemporary(descriptor);
+            _previousDescriptor = descriptor;
+        }
+
+        _reflectionCamera.targetTexture = _reflectionTexture;
+        _reflectionCamera.forceIntoRenderTexture = true;
+    }
+
+    private RenderTextureDescriptor GetDescriptor(Camera camera)
+    {
+        if (camera == null || UniversalRenderPipeline.asset == null)
+            return new RenderTextureDescriptor(256, 256, RenderTextureFormat.Default, 16);
+
+        var pipelineRenderScale = UniversalRenderPipeline.asset.renderScale;
+        var width = (int)Mathf.Max(camera.pixelWidth * pipelineRenderScale * renderScale, 4f);
+        var height = (int)Mathf.Max(camera.pixelHeight * pipelineRenderScale * renderScale, 4f);
+        var hdr = camera.allowHDR;
+        var renderTextureFormat = hdr ? RenderTextureFormat.DefaultHDR : RenderTextureFormat.Default;
+
+        return new RenderTextureDescriptor(width, height, renderTextureFormat, 16)
+        {
+            autoGenerateMips = true,
+            useMipMap = true,
+            depthBufferBits = 16,
+            msaaSamples = 1
+        };
+    }
+
+    private Camera InitializeReflectionCamera()
+    {
+        var go = new GameObject($"Reflection Camera [{GetInstanceID()}]", typeof(Camera));
+
+        var camData = go.AddComponent<UniversalAdditionalCameraData>();
+        camData.requiresColorOption = CameraOverrideOption.On;
+        camData.requiresDepthOption = CameraOverrideOption.On;
+        camData.renderShadows = false;
+        camData.SetRenderer(0);
+
+        var reflectionCamera = go.GetComponent<Camera>();
+        reflectionCamera.transform.SetPositionAndRotation(_transform.position, _transform.rotation);
+        reflectionCamera.depth = -10f;
+        reflectionCamera.enabled = false;
+        if (reflectSkybox)
+            reflectionCamera.clearFlags = CameraClearFlags.Skybox;
+        else
+        {
+            reflectionCamera.clearFlags = CameraClearFlags.SolidColor;
+            reflectionCamera.backgroundColor = Color.clear;
+        }
+        return reflectionCamera;
+    }
+
+    private void UpdateCameraHideFlags()
+    {
+        if (_reflectionCamera == null) return;
+
+        var newHideFlags = hideReflectionCamera ? HideFlags.HideAndDontSave : HideFlags.DontSave;
+        if (_reflectionCamera.gameObject.hideFlags != newHideFlags)
+        {
+            _reflectionCamera.gameObject.hideFlags = newHideFlags;
+#if UNITY_EDITOR
+            EditorApplication.DirtyHierarchyWindowSorting();
+#endif
+        }
+    }
+
+    private void UpdateCamera(Camera src, Camera dest)
+    {
+        if (src == null || dest == null) return;
+
+        dest.transform.SetPositionAndRotation(src.transform.position, src.transform.rotation);
+        dest.fieldOfView = src.fieldOfView;
+        dest.nearClipPlane = src.nearClipPlane;
+        dest.farClipPlane = src.farClipPlane;
+        dest.orthographic = src.orthographic;
+        dest.orthographicSize = src.orthographicSize;
+        dest.aspect = src.aspect;
+        dest.useOcclusionCulling = false;
+        if (dest.TryGetComponent(out UniversalAdditionalCameraData camData))
+        {
+            camData.renderShadows = false;
+            camData.requiresColorOption = CameraOverrideOption.On;
+            camData.requiresDepthOption = CameraOverrideOption.On;
+
+            if (reflectSkybox)
+                dest.clearFlags = CameraClearFlags.Skybox;
+            else
+            {
+                dest.clearFlags = CameraClearFlags.SolidColor;
+                dest.backgroundColor = Color.clear;
+            }
+        }
+    }
+
+    private static void CalculateReflectionMatrix(ref Matrix4x4 reflectionMatrix, Vector4 plane)
+    {
+        float x = plane.x, y = plane.y, z = plane.z, w = plane.w;
+
+        reflectionMatrix.m00 = 1F - 2F * x * x;
+        reflectionMatrix.m01 = -2F * x * y;
+        reflectionMatrix.m02 = -2F * x * z;
+        reflectionMatrix.m03 = -2F * w * x;
+
+        reflectionMatrix.m10 = -2F * y * x;
+        reflectionMatrix.m11 = 1F - 2F * y * y;
+        reflectionMatrix.m12 = -2F * y * z;
+        reflectionMatrix.m13 = -2F * w * y;
+
+        reflectionMatrix.m20 = -2F * z * x;
+        reflectionMatrix.m21 = -2F * z * y;
+        reflectionMatrix.m22 = 1F - 2F * z * z;
+        reflectionMatrix.m23 = -2F * w * z;
 
         reflectionMatrix.m30 = 0F;
         reflectionMatrix.m31 = 0F;
@@ -333,11 +383,55 @@ public class PlanarReflectionVolume : MonoBehaviour
         reflectionMatrix.m33 = 1F;
     }
 
-    private void OnDrawGizmos()
+    private static Vector3 ReflectPosition(Vector3 pos) => new(pos.x, -pos.y, pos.z);
+
+    private Vector4 CameraSpacePlane(Camera cam, Vector3 pos, Vector3 normal, float sideSign)
     {
+        if (cam == null) return new Vector4();
+
+        var m = cam.worldToCameraMatrix;
+        var cameraPosition = m.MultiplyPoint(pos);
+        var cameraNormal = m.MultiplyVector(normal).normalized * sideSign;
+        return new Vector4(cameraNormal.x, cameraNormal.y, cameraNormal.z, -Vector3.Dot(cameraPosition, cameraNormal));
+    }
+
+#if UNITY_EDITOR
+    private bool IsValidForRendering(Camera camera)
+    {
+        if (camera == null) return false;
+
+        if (camera.cameraType == CameraType.SceneView)
+        {
+            var sceneView = SceneView.currentDrawingSceneView;
+            if (sceneView == null) return false;
+
+            if (!sceneView.hasFocus || sceneView.in2DMode) return false;
+        }
+
+        if (camera.pixelWidth <= 0 || camera.pixelHeight <= 0) return false;
+
+        if (_reflectionTexture == null || !_reflectionTexture.IsCreated()) return false;
+
+        return true;
+    }
+#endif
+
+    private bool ShouldRenderReflectionTarget()
+    {
+        if (_reflectionCamera == null || reflectionTarget == null) return false;
+
+        var viewportPoint = _reflectionCamera.WorldToViewportPoint(reflectionTarget.transform.position);
+        return viewportPoint.z < 100000f;
+    }
+   
+#if UNITY_EDITOR
+    private void OnDrawGizmosSelected()
+    {
+        if (_transform == null) _transform = transform;
+
         // Draw inner volume
         Gizmos.color = new Color(0f, 1f, 1f, 0f);
-        Gizmos.matrix = transform.localToWorldMatrix;
+        Gizmos.matrix = _transform.localToWorldMatrix;
         Gizmos.DrawCube(Vector3.zero, volumeSize);
 
         // Draw inner volume wireframe
@@ -352,34 +446,37 @@ public class PlanarReflectionVolume : MonoBehaviour
             Gizmos.DrawWireCube(Vector3.zero, blendSize);
         }
     }
+#endif
 
-    private class PlanarReflectionSettingData
+    private class PlanarReflectionSettingData : IDisposable
     {
-        private readonly bool fog;
-        private readonly int maximumLODLevel;
-        private readonly float lodBias;
+        private readonly bool _fog;
+        private readonly int _maximumLODLevel;
+        private readonly float _lodBias;
 
         public PlanarReflectionSettingData()
         {
-            fog = RenderSettings.fog;
-            maximumLODLevel = QualitySettings.maximumLODLevel;
-            lodBias = QualitySettings.lodBias;
+            _fog = RenderSettings.fog;
+            _maximumLODLevel = QualitySettings.maximumLODLevel;
+            _lodBias = QualitySettings.lodBias;
+
+            ApplySettings();
         }
 
-        public void Set()
+        private void ApplySettings()
         {
             GL.invertCulling = true;
             RenderSettings.fog = false;
             QualitySettings.maximumLODLevel = 1;
-            QualitySettings.lodBias = lodBias * 0.5f;
+            QualitySettings.lodBias = _lodBias * 0.5f;
         }
 
-        public void Restore()
+        public void Dispose()
         {
             GL.invertCulling = false;
-            RenderSettings.fog = fog;
-            QualitySettings.maximumLODLevel = maximumLODLevel;
-            QualitySettings.lodBias = lodBias;
+            RenderSettings.fog = _fog;
+            QualitySettings.maximumLODLevel = _maximumLODLevel;
+            QualitySettings.lodBias = _lodBias;
         }
     }
 }

@@ -54,11 +54,11 @@ Material:
     - _DistortSpeed: 0.02
     - _Distortion: 0.07
     - _Invert: 1
-    - _MoveSpeed: 0.005
+    - _MoveSpeed: 1
     - _MultiplyWithDistort: 0
     - _Primary_Cutoff: 0.095
     - _Secondary_Layer_Strength: 0.596
-    - _SineWaveSpeed: 2
+    - _SineWaveSpeed: 0.1
     - _Smoothness: 0.151
     m_Colors: []
   m_BuildTextureStacks: []
