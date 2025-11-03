@@ -53,7 +53,6 @@ public class PlanarReflectionVolume : MonoBehaviour
     private void OnEnable()
     {
         RenderPipelineManager.beginCameraRendering += DoPlanarReflections;
-        reflectionLayer = ~(1 << 4); // Exclude layer 4
         CacheVolumeBounds();
         UpdateTargetMaterial();
     }
@@ -423,7 +422,7 @@ public class PlanarReflectionVolume : MonoBehaviour
         var viewportPoint = _reflectionCamera.WorldToViewportPoint(reflectionTarget.transform.position);
         return viewportPoint.z < 100000f;
     }
-   
+
 #if UNITY_EDITOR
     private void OnDrawGizmosSelected()
     {

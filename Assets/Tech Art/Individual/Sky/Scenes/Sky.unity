@@ -347,6 +347,7 @@ GameObject:
   - component: {fileID: 411152252}
   - component: {fileID: 411152251}
   - component: {fileID: 411152253}
+  - component: {fileID: 411152254}
   m_Layer: 0
   m_Name: Directional Light
   m_TagString: Untagged
@@ -463,6 +464,25 @@ MonoBehaviour:
   m_ShadowLayerMask: 1
   m_RenderingLayers: 1
   m_ShadowRenderingLayers: 1
+--- !u!114 &411152254
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 411152250}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 1d09013b76b635548a4f58524ea83310, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::CloudMotionAndShadowsController
+  directionalLight: {fileID: 411152251}
+  cloudDistortionSpeedDir: {x: -0.01, y: 0.01}
+  cloudLayerSpeedDir: {x: 0.003, y: 0.001}
+  isShadowsCurrentActive: 0
+  isBackAndForth: 0
+  cloudShadowsSpeed: 0.005
+  cloudShadowsSineWaveSpeed: 2
 --- !u!1660057539 &9223372036854775807
 SceneRoots:
   m_ObjectHideFlags: 0

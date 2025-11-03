@@ -47,7 +47,7 @@ MonoBehaviour:
   reflectionTarget: {fileID: 0}
   reflectionLayer:
     serializedVersion: 2
-    m_Bits: 111
+    m_Bits: 65
   renderScale: 1
   hideReflectionCamera: 1
   reflectSkybox: 1

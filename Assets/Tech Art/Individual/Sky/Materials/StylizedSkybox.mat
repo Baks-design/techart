@@ -75,6 +75,8 @@ Material:
     - Color_BE31CDF2: {r: 0.22609468, g: 0.2754717, b: 0.23305811, a: 0}
     - Color_D230EFA1: {r: 0.007112843, g: 0.01581824, b: 0.1396227, a: 0}
     - Color_E5129607: {r: 0.490566, g: 0.4697732, b: 0.1666073, a: 0}
+    - _CloudDistortionSpeedOffset: {r: 0.8721228, g: 0.12787719, b: 0, a: 0}
+    - _CloudLayerSpeedOffset: {r: 0.03836316, g: 0.01278772, b: 0, a: 0}
     - _Cloud_Distortion_Speed_Dir: {r: -0.01, g: 0.01, b: 0, a: 0}
     - _Cloud_Layer_Speed_Dir: {r: 0.003, g: 0.001, b: 0, a: 0}
     - _Horizon_Clouds_Fade: {r: 0.06, g: 1, b: 0, a: 0}
