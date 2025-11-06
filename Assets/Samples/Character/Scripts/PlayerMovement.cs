@@ -1,217 +1,155 @@
 using System;
-using System.Collections;
 using UnityEngine;
 using UnityEngine.InputSystem;
 
-[RequireComponent(typeof(CharacterController))]
-[RequireComponent(typeof(PlayerAnimation))]
 public class PlayerMovement : MonoBehaviour
 {
+    [Header("References")]
+    [SerializeField] private Camera playerCamera;
+    [SerializeField] private PlayerAnimator animationController;
+    [SerializeField] private CharacterController controller;
+
     [Header("Movement Settings")]
     [SerializeField] private float walkSpeed = 3f;
     [SerializeField] private float runSpeed = 6f;
-    [SerializeField] private float jumpHeight = 1.5f;
     [SerializeField] private float rotationSpeed = 10f;
+    [SerializeField] private float gravityMultiplier = 2f;
 
-    [Header("Ground Check")]
-    [SerializeField] private Transform groundCheck;
-    [SerializeField] private float groundDistance = 0.4f;
+    [Header("Roll Settings")]
+    [SerializeField] private AnimationCurve rollMovementCurve;
 
-    [Header("References")]
-    [SerializeField] private Camera playerCamera;
-    [SerializeField] private PlayerAnimation animationController;
-    [SerializeField] private CharacterController controller;
-    
-    private bool isRolling = false;
-    private Coroutine currentRollCoroutine;
     private Transform _transform;
-    private Vector3 velocity;
-    private Vector3 cameraForward;
-    private Vector3 cameraRight;
-    private Vector2 movementInput;
-    private bool jumpPressed;
-    private bool rollPressed;
-    private float jumpVelocity;
-    private InputAction moveAction;
-    private InputAction jumpAction;
-    private InputAction runAction;
-    private InputAction rollAction;
-    private const float GROUNDED_VELOCITY_Y = -2f;
-    private static readonly WaitForSeconds _waitForSecondsRollRoutine = new(0.5f);
+    private Transform _cameraTransform;
+    private Vector3 _velocity;
+    private float _currentSpeed;
+    private Vector2 _movementInput;
+    private bool _rollPressed;
 
-    public Vector3 Velocity => controller.velocity;
-    public Vector2 MovementInput => movementInput;
-    public bool IsEnabled { get; private set; } = true;
-    public bool IsGrounded { get; private set; }
+    private const float GROUNDED_VELOCITY_Y = -2f;
+    private const float INPUT_DEADZONE = 0.01f;
+
+    private InputAction _moveAction;
+    private InputAction _runAction;
+    private InputAction _rollAction;
+
+    public bool IsCanMove { get; private set; } = true;
+    public bool IsGrounded => controller.isGrounded;
     public bool IsRunning { get; private set; }
-    public float CurrentSpeed { get; private set; }
 
     private void Start()
     {
-        controller = GetComponent<CharacterController>();
-        if (animationController == null)
-            animationController = GetComponent<PlayerAnimation>();
-        if (playerCamera == null)
-            playerCamera = Camera.main;
-
-        _transform = transform;
-        jumpVelocity = Mathf.Sqrt(jumpHeight * -2f * Physics.gravity.y);
-
-        Cursor.lockState = CursorLockMode.Locked;
-        Cursor.visible = false;
-
-        moveAction = InputSystem.actions.FindAction("Move");
-        jumpAction = InputSystem.actions.FindAction("Jump");
-        runAction = InputSystem.actions.FindAction("Sprint");
-        rollAction = InputSystem.actions.FindAction("Roll");
+        InitializeComponents();
+        CacheReferences();
+        SetupRollCurve();
     }
 
-    private void Update() => GetInput();
+    private void InitializeComponents()
+    {
+        Cursor.lockState = CursorLockMode.Locked;
+        playerCamera = Camera.main;
+    }
+
+    private void CacheReferences()
+    {
+        _transform = controller.transform;
+        _cameraTransform = playerCamera != null ? playerCamera.transform : null;
+
+        try
+        {
+            _moveAction = InputSystem.actions.FindAction("Move");
+            _runAction = InputSystem.actions.FindAction("Sprint");
+            _rollAction = InputSystem.actions.FindAction("Roll");
+        }
+        catch (Exception)
+        {
+        }
+    }
+
+    private void SetupRollCurve()
+    => rollMovementCurve ??= new AnimationCurve(
+        new Keyframe(0.0f, 0.8f),
+        new Keyframe(0.3f, 1.0f),
+        new Keyframe(0.7f, 0.5f),
+        new Keyframe(1.0f, 0.2f)
+    );
+
+    private void Update()
+    {
+        if (!IsCanMove) return;
+
+        GetInput();
+        HandleRoll();
+        HandleMovement();
+        HandleGravity();
+    }
 
     private void GetInput()
     {
-        if (!IsEnabled) return;
+        _movementInput = _moveAction.ReadValue<Vector2>();
+        if (_movementInput.sqrMagnitude > 1f)
+            _movementInput.Normalize();
 
-        movementInput.x = moveAction.ReadValue<Vector2>().x;
-        movementInput.y = moveAction.ReadValue<Vector2>().y;
-        if (movementInput.sqrMagnitude > 1f)
-            movementInput.Normalize();
-        IsRunning = runAction.IsPressed();
-        jumpPressed = jumpAction.WasPressedThisFrame();
-        rollPressed = rollAction.WasPressedThisFrame();
+        IsRunning = _runAction.IsPressed();
+
+        _rollPressed = _rollAction.WasPressedThisFrame();
     }
 
-    private void FixedUpdate()
+    private void HandleRoll()
     {
-        HandleGroundCheck();
-        HandleMovement();
-        HandleJumpAndGravity();
-        HandleRoll();
-    }
+        if (!_rollPressed) return;
 
-    private void HandleGroundCheck() => IsGrounded = controller.isGrounded;
+        animationController.OnRollStart();
+    }
 
     private void HandleMovement()
     {
-        if (movementInput.sqrMagnitude < 0.01f)
+        if (_movementInput.sqrMagnitude < INPUT_DEADZONE)
         {
-            CurrentSpeed = 0f;
+            _currentSpeed = 0f;
             return;
         }
 
-        CurrentSpeed = IsRunning ? runSpeed : walkSpeed;
+        _currentSpeed = IsRunning ? runSpeed : walkSpeed;
 
-        CacheCameraVectors();
-
-        var moveDirection = (cameraForward * movementInput.y + cameraRight * movementInput.x).normalized;
+        var moveDirection = CalculateMovementDirection();
         if (moveDirection != Vector3.zero)
         {
-            controller.Move(CurrentSpeed * Time.deltaTime * moveDirection);
+            controller.Move(_currentSpeed * Time.deltaTime * moveDirection);
             RotateTowardsMovement(moveDirection);
         }
     }
 
-    private void CacheCameraVectors()
+    private Vector3 CalculateMovementDirection()
     {
-        if (playerCamera != null)
-        {
-            cameraForward = playerCamera.transform.forward;
-            cameraRight = playerCamera.transform.right;
+        if (_cameraTransform == null) return Vector3.zero;
 
-            cameraForward.y = 0f;
-            cameraRight.y = 0f;
+        var forward = _cameraTransform.forward;
+        var right = _cameraTransform.right;
 
-            cameraForward.Normalize();
-            cameraRight.Normalize();
-        }
-        else
-        {
-            cameraForward = Vector3.forward;
-            cameraRight = Vector3.right;
-        }
+        forward.y = 0f;
+        right.y = 0f;
+
+        if (forward.sqrMagnitude > 1.01f) forward.Normalize();
+        if (right.sqrMagnitude > 1.01f) right.Normalize();
+
+        return (forward * _movementInput.y + right * _movementInput.x).normalized;
     }
 
     private void RotateTowardsMovement(Vector3 moveDirection)
     {
-        var targetRotation = Quaternion.LookRotation(moveDirection);
-        _transform.rotation = Quaternion.Slerp(_transform.rotation, targetRotation, rotationSpeed * Time.deltaTime);
+        if (moveDirection.sqrMagnitude < INPUT_DEADZONE) return;
+
+        var targetRotation = Quaternion.LookRotation(moveDirection, Vector3.up);
+        _transform.rotation = Quaternion.Slerp(
+            _transform.rotation, targetRotation, rotationSpeed * Time.deltaTime);
     }
 
-    private void HandleJumpAndGravity()
+    private void HandleGravity()
     {
-        if (IsGrounded && velocity.y < 0f)
-            velocity.y = GROUNDED_VELOCITY_Y;
+        if (IsGrounded && _velocity.y < 0f)
+            _velocity.y = GROUNDED_VELOCITY_Y;
+        _velocity.y += Physics.gravity.y * gravityMultiplier * Time.deltaTime;
 
-        if (jumpPressed && IsGrounded)
-            velocity.y = jumpVelocity;
-
-        velocity.y += Physics.gravity.y * Time.deltaTime;
-
-        controller.Move(velocity * Time.deltaTime);
-    }
-
-
-    private void HandleRoll()
-    {
-        if (!rollPressed || isRolling) return;
-
-        if (currentRollCoroutine != null)
-            StopCoroutine(currentRollCoroutine);
-
-        currentRollCoroutine = StartCoroutine(RollRoutine());
-    }
-
-    private IEnumerator RollRoutine()
-    {
-        isRolling = true;
-
-        try
-        {
-            animationController.Roll();
-        }
-        catch (Exception e)
-        {
-            Debug.LogError($"Error during Roll(): {e.Message}");
-            isRolling = false;
-            yield break;
-        }
-
-        yield return _waitForSecondsRollRoutine;
-
-        try
-        {
-            animationController.OnRollEnd();
-        }
-        catch (Exception e)
-        {
-            Debug.LogError($"Error during OnRollEnd(): {e.Message}");
-        }
-        finally
-        {
-            isRolling = false;
-        }
-    }
-
-    private void OnDrawGizmosSelected()
-    {
-        if (groundCheck == null) return;
-
-        Gizmos.color = IsGrounded ? Color.green : Color.red;
-        Gizmos.DrawWireSphere(groundCheck.position, groundDistance);
-    }
-
-    private void OnDisable()
-    {
-        Cursor.lockState = CursorLockMode.None;
-        Cursor.visible = true;
-    }
-
-    public void SetMovementEnabled(bool enabled) => IsEnabled = enabled;
-
-    public void AddKnockback(Vector3 force)
-    {
-        velocity.x += force.x;
-        velocity.y += force.y;
-        velocity.z += force.z;
+        controller.Move(new Vector3(0f, _velocity.y * Time.deltaTime, 0f));
     }
 }

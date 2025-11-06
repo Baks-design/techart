@@ -1,209 +1,135 @@
 using UnityEngine;
 
-[RequireComponent(typeof(Animator), typeof(CharacterController), typeof(PlayerMovement))]
-public class PlayerAnimation : MonoBehaviour
+public class PlayerAnimator : MonoBehaviour
 {
-    public enum PlayerState
-    {
-        Idle,
-        Walking,
-        Running,
-        Jumping,
-        Falling,
-        Attacking,
-        Rolling,
-        Damaged
-    }
-
-    [Header("References")]
-    [SerializeField] private Animator animator;
     [SerializeField] private CharacterController controller;
-    [SerializeField] private PlayerMovement movement;
+    [SerializeField] private Animator _animator;
+    [SerializeField] private float _normalWalkSpeed = 1.7f;
+    [SerializeField] private float _normalSprintSpeed = 5f;
+    [SerializeField] private float _maxSprintScale = 1.4f;
 
-    [Header("State Settings")]
-    [SerializeField] private float walkThreshold = 0.1f;
-    [SerializeField] private float runThreshold = 4f;
-    [SerializeField] private float attackAnimationLength = 0.5f;
-    [SerializeField] private float fallingThreshold = -0.1f;
-    private float stateTimer = 0f;
-    private float calculatedSpeed;
-    private readonly int moveSpeedHash = Animator.StringToHash("MoveSpeed");
-    private readonly int verticalSpeedHash = Animator.StringToHash("VerticalSpeed");
-    private readonly int isGroundedHash = Animator.StringToHash("IsGrounded");
-    private readonly int isMovingHash = Animator.StringToHash("IsMoving");
-    private readonly int isRunningHash = Animator.StringToHash("IsRunning");
-    private readonly int jumpHash = Animator.StringToHash("Jump");
-    private readonly int attackHash = Animator.StringToHash("Attack");
-    private readonly int rollHash = Animator.StringToHash("Roll");
-    private readonly int damageHash = Animator.StringToHash("Damage");
+    private Transform _transform;
+    private Vector3 _previousPosition;
+    private AnimationState _currentState;
+    private struct AnimationState
+    {
+        public bool IsWalking;
+        public bool IsRunning;
+        public bool RollTriggered;
+        public Vector3 Direction;
+        public float MotionScale;
+    }
+    private float _deltaTime;
+    private float _inverseWalkSpeed;
+    private float _inverseSprintSpeed;
+    private float _inverseSprintScaleDivisor;
 
-    public PlayerState CurrentState { get; private set; } = PlayerState.Idle;
-    private bool CanAttack => !IsInUninterruptibleState();
-    private bool CanRoll => !IsInUninterruptibleState() && controller.isGrounded;
+    private const float IdleThreshold = 0.2f;
+    private const float HysteresisRunThreshold = 0.15f;
+    private const float HysteresisWalkThreshold = 0.05f;
+    private const float SprintScaleDivisor = 3f;
+
+    private static readonly int Speed = Animator.StringToHash("Speed");
+    private static readonly int MotionScale = Animator.StringToHash("MotionScale");
+    private static readonly int Walking = Animator.StringToHash("Walking");
+    private static readonly int Running = Animator.StringToHash("Running");
+    private static readonly int Roll = Animator.StringToHash("Roll");
+
+    public bool IsMoving => _currentState.IsWalking || _currentState.IsRunning;
+    public Vector3 MovementDirection => _currentState.Direction;
 
     private void Start()
     {
-        if (animator == null)
-            animator = GetComponent<Animator>();
-        if (controller == null)
-            controller = GetComponent<CharacterController>();
-        if (movement == null)
-            movement = GetComponent<PlayerMovement>();
+        _transform = controller.transform;
+        _previousPosition = controller.transform.position;
+
+        _inverseWalkSpeed = 1f / _normalWalkSpeed;
+        _inverseSprintSpeed = 1f / _normalSprintSpeed;
+        _inverseSprintScaleDivisor = 1f / (SprintScaleDivisor * _normalSprintSpeed);
     }
 
-    private void Update()
+    private void LateUpdate()
     {
-        stateTimer += Time.deltaTime;
-        CalculateSpeed();
-        HandleStateTransitions();
-        UpdateAnimator();
+        _deltaTime = Time.deltaTime;
+        if (_deltaTime <= 0f) return;
+
+        UpdateMovementAnimation();
     }
 
-    private void CalculateSpeed()
-    => calculatedSpeed = new Vector3(controller.velocity.x, 0f, controller.velocity.z).magnitude;
-
-    private void HandleStateTransitions()
+    private void UpdateMovementAnimation()
     {
-        var isMoving = calculatedSpeed > walkThreshold;
-        var isRunning = calculatedSpeed > runThreshold;
+        var currentPosition = _transform.position;
 
-        if (IsInUninterruptibleState()) return;
+        var inverseDeltaTime = 1f / _deltaTime;
+        var worldVelocity = (currentPosition - _previousPosition) * inverseDeltaTime;
 
-        switch (CurrentState)
+        var localVelocity = Quaternion.Inverse(_transform.rotation) * worldVelocity;
+        _previousPosition = currentPosition;
+
+        UpdateAnimationState(localVelocity);
+    }
+
+    private void UpdateAnimationState(Vector3 localVelocity)
+    {
+        localVelocity.y = 0f;
+        var speed = localVelocity.magnitude;
+
+        UpdateMovementStates(speed);
+        UpdateAnimationParameters(localVelocity, speed);
+    }
+
+    private void UpdateMovementStates(float speed)
+    {
+        var runThreshold = _normalWalkSpeed * 2f;
+        var runHysteresis = _currentState.IsRunning ? -HysteresisRunThreshold : HysteresisRunThreshold;
+        var walkHysteresis = _currentState.IsWalking ? -HysteresisWalkThreshold : HysteresisWalkThreshold;
+
+        _currentState.IsRunning = speed > runThreshold + runHysteresis;
+        _currentState.IsWalking = !_currentState.IsRunning && speed > IdleThreshold + walkHysteresis;
+    }
+
+    private void UpdateAnimationParameters(Vector3 localVelocity, float speed)
+    {
+        if (speed > IdleThreshold)
         {
-            case PlayerState.Idle:
-                if (!controller.isGrounded)
-                    ChangeState(PlayerState.Jumping);
-                else if (isMoving)
-                    ChangeState(isRunning ? PlayerState.Running : PlayerState.Walking);
-                break;
-
-            case PlayerState.Walking:
-                if (!controller.isGrounded)
-                    ChangeState(PlayerState.Jumping);
-                else if (!isMoving)
-                    ChangeState(PlayerState.Idle);
-                else if (isRunning)
-                    ChangeState(PlayerState.Running);
-                break;
-
-            case PlayerState.Running:
-                if (!controller.isGrounded)
-                    ChangeState(PlayerState.Jumping);
-                else if (!isMoving)
-                    ChangeState(PlayerState.Idle);
-                else if (!isRunning)
-                    ChangeState(PlayerState.Walking);
-                break;
-
-            case PlayerState.Jumping:
-                if (controller.velocity.y < fallingThreshold)
-                    ChangeState(PlayerState.Falling);
-                else if (controller.isGrounded)
-                    ChangeState(GetGroundedState(isMoving, isRunning));
-                break;
-
-            case PlayerState.Falling:
-                if (controller.isGrounded)
-                    ChangeState(GetGroundedState(isMoving, isRunning));
-                break;
-
-            case PlayerState.Attacking:
-                if (stateTimer > attackAnimationLength)
-                    ChangeState(PlayerState.Idle);
-                break;
-
-            case PlayerState.Rolling:
-                    ChangeState(PlayerState.Falling);
-                
-                break;
+            var inverseSpeed = 1f / speed;
+            _currentState.Direction = localVelocity * inverseSpeed;
         }
+        else
+            _currentState.Direction = Vector3.zero;
+
+        if (_currentState.IsWalking)
+            _currentState.MotionScale = speed * _inverseWalkSpeed;
+        else if (_currentState.IsRunning)
+            _currentState.MotionScale = CalculateRunMotionScale(speed);
+        else
+            _currentState.MotionScale = 1f;
+
+        ApplyAnimatorParameters();
     }
 
-    private bool IsInUninterruptibleState()
-    => CurrentState == PlayerState.Attacking ||
-        CurrentState == PlayerState.Rolling ||
-        CurrentState == PlayerState.Damaged;
-
-    private PlayerState GetGroundedState(bool isMoving, bool isRunning)
-    => isMoving ? (isRunning ? PlayerState.Running : PlayerState.Walking) : PlayerState.Idle;
-
-    private void UpdateAnimator()
+    private float CalculateRunMotionScale(float speed)
     {
-        animator.SetFloat(moveSpeedHash, calculatedSpeed);
-        animator.SetFloat(verticalSpeedHash, controller.velocity.y);
-        animator.SetBool(isGroundedHash, controller.isGrounded);
-        animator.SetBool(isMovingHash, calculatedSpeed > walkThreshold);
-        animator.SetBool(isRunningHash, CurrentState == PlayerState.Running);
+        if (speed < _normalSprintSpeed)
+            return speed * _inverseSprintSpeed;
+        return Mathf.Min(_maxSprintScale, 1f + (speed - _normalSprintSpeed) * _inverseSprintScaleDivisor);
     }
 
-    public void Attack()
+    private void ApplyAnimatorParameters()
     {
-        if (!CanAttack) return;
-        ChangeState(PlayerState.Attacking);
+        _animator.SetFloat(Speed, _currentState.Direction.z);
+        _animator.SetFloat(MotionScale, _currentState.MotionScale);
+
+        _animator.SetBool(Walking, _currentState.IsWalking);
+        _animator.SetBool(Running, _currentState.IsRunning);
+
+        if (_currentState.RollTriggered)
+            _animator.SetTrigger(Roll);
+
+        ResetTriggers();
     }
 
-    public void TakeDamage()
-    {
-        if (CurrentState == PlayerState.Damaged) return;
-        ChangeState(PlayerState.Damaged);
-    }
+    void ResetTriggers() => _currentState.RollTriggered = false;
 
-    public void OnAttackEnd()
-    {
-        if (CurrentState != PlayerState.Attacking) return;
-        ChangeState(PlayerState.Idle);
-    }
-
-    public void Roll()
-    {
-        if (!CanRoll) return;
-        ChangeState(PlayerState.Rolling);
-    }
-
-    public void OnRollEnd()
-    {
-        if (CurrentState != PlayerState.Rolling) return;
-        ChangeState(PlayerState.Idle);
-    }
-
-    public void OnDamageEnd()
-    {
-        if (CurrentState != PlayerState.Damaged) return;
-        ChangeState(PlayerState.Idle);
-    }
-
-    private void ChangeState(PlayerState newState)
-    {
-        if (CurrentState == newState) return;
-
-        switch (CurrentState)
-        {
-            case PlayerState.Attacking:
-                animator.ResetTrigger(attackHash);
-                break;
-        }
-
-        var previousState = CurrentState;
-        CurrentState = newState;
-        stateTimer = 0f;
-
-        switch (newState)
-        {
-            case PlayerState.Jumping:
-                animator.SetTrigger(jumpHash);
-                break;
-            case PlayerState.Attacking:
-                animator.SetTrigger(attackHash);
-                break;
-            case PlayerState.Rolling:
-                animator.SetTrigger(rollHash);
-                break;
-            case PlayerState.Damaged:
-                animator.SetTrigger(damageHash);
-                break;
-        }
-
-        Debug.Log($"PlayerState changed: {previousState} -> {newState}");
-    }
+    public void OnRollStart() => _currentState.RollTriggered = true;
 }
