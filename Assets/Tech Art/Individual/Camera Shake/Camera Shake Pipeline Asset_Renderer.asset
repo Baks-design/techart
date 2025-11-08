@@ -64,6 +64,7 @@ MonoBehaviour:
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 5b312af779cb74f498818b5e13e32f9a, type: 3}
-  m_Name: ScreenShake
+  m_Name: Screen Shake
   m_EditorClassIdentifier: Assembly-CSharp::ScreenShakeRendererFeature
   m_Active: 1
+  _renderPassEvent: 550

@@ -1,12 +1,14 @@
 using UnityEngine;
 using UnityEngine.Rendering;
-using UnityEngine.Rendering.Universal;
 using UnityEngine.Rendering.RenderGraphModule;
+using UnityEngine.Rendering.Universal;
 
 public class ScreenShakeRenderPass : ScriptableRenderPass
 {
-    private class PassData
+    private class ShakePassData
     {
+        public TextureHandle source;
+        public TextureHandle tempTex;
         public Material material;
         public float intensity;
         public float strengthX;
@@ -20,15 +22,12 @@ public class ScreenShakeRenderPass : ScriptableRenderPass
         public float radiusX;
         public float radiusY;
         public float edge;
-        public TextureHandle sourceTexture;
-        public TextureHandle destTexture;
     }
 
     private Material _material;
     private ScreenShakeSettings _screenShakeSettings;
     private readonly ProfilingSampler _profilingSampler;
 
-    private static readonly int MainTexID = Shader.PropertyToID("_MainTex");
     private static readonly int IntensityID = Shader.PropertyToID("_Intensity");
     private static readonly int StrengthXID = Shader.PropertyToID("_StrengthX");
     private static readonly int StrengthYID = Shader.PropertyToID("_StrengthY");
@@ -42,124 +41,90 @@ public class ScreenShakeRenderPass : ScriptableRenderPass
     private static readonly int ShapeRadiusYID = Shader.PropertyToID("_ShapeRadiusY");
     private static readonly int ShapeEdgeID = Shader.PropertyToID("_ShapeEdge");
 
-    public ScreenShakeRenderPass()
-    {
-        _profilingSampler = new ProfilingSampler("ScreenShake");
-        renderPassEvent = RenderPassEvent.BeforeRenderingPostProcessing;
-    }
+    public ScreenShakeRenderPass() => _profilingSampler = new ProfilingSampler("Screen Shake");
 
     public bool Setup()
     {
         _screenShakeSettings = VolumeManager.instance.stack.GetComponent<ScreenShakeSettings>();
-        return _screenShakeSettings != null && _screenShakeSettings.IsActive() && EnsureMaterial();
-    }
-
-    private bool EnsureMaterial()
-    {
-        if (_material == null) 
+        if (_screenShakeSettings != null && _screenShakeSettings.IsActive())
+        {
             _material = new Material(Shader.Find("Custom/ScreenShake"));
-        return _material != null;
+            return true;
+        }
+        return false;
     }
 
     public override void RecordRenderGraph(RenderGraph renderGraph, ContextContainer contextContainer)
     {
-        if (!Setup()) return;
+        if (_screenShakeSettings == null || !_screenShakeSettings.IsActive()) return;
 
+        // Get rendering data and resources
         var resourceData = contextContainer.Get<UniversalResourceData>();
         var cameraData = contextContainer.Get<UniversalCameraData>();
 
-        // Create temporary texture descriptor
-        var textureDesc = CreateTextureDescriptor(cameraData.cameraTargetDescriptor);
+        // Create texture descriptor for temporary texture
+        var cameraTextureDesc = cameraData.cameraTargetDescriptor;
+        cameraTextureDesc.depthBufferBits = 0; // We don't need depth for temp texture
 
-        // Two-pass approach: source -> temp -> source
-        var tempTexture = renderGraph.CreateTexture(textureDesc);
+        // Import the source texture (camera color)
+        var source = resourceData.activeColorTexture;
 
-        // First pass: source -> temp with screen shake
-        using (var builder = renderGraph.AddRasterRenderPass<PassData>("ScreenShake Apply", out var passData, _profilingSampler))
+        // Create temporary texture
+        var tempTex = renderGraph.CreateTexture(new TextureDesc(cameraTextureDesc)
         {
-            passData.material = _material;
-            passData.intensity = _screenShakeSettings.intensity.value;
-            passData.strengthX = _screenShakeSettings.shakeStrengthX.value;
-            passData.strengthY = _screenShakeSettings.shakeStrengthY.value;
-            passData.offsetPercentage = _screenShakeSettings.offsetPercentage.value;
-            passData.randomShake = _screenShakeSettings.randomShake.value;
-            passData.noiseScale = _screenShakeSettings.noiseScale.value;
-            passData.noiseSpeed = _screenShakeSettings.noiseSpeed.value;
-            passData.offsetX = _screenShakeSettings.offsetX.value;
-            passData.offsetY = _screenShakeSettings.offsetY.value;
-            passData.radiusX = _screenShakeSettings.radiusX.value;
-            passData.radiusY = _screenShakeSettings.radiusY.value;
-            passData.edge = _screenShakeSettings.edge.value;
-            passData.sourceTexture = resourceData.activeColorTexture;
-            passData.destTexture = tempTexture;
+            name = "_TempTex",
+            clearBuffer = true
+        });
 
-            builder.UseTexture(resourceData.activeColorTexture, AccessFlags.Read);
-            builder.UseTexture(tempTexture, AccessFlags.Write);
-            builder.SetRenderFunc(static (PassData data, RasterGraphContext context) =>
-            {
-                ExecuteBlitPass(data, context.cmd);
-            });
-        }
+        // Add the render pass
+        using var builder = renderGraph.AddRasterRenderPass<ShakePassData>("Shake Pass", out var passData, _profilingSampler);
 
-        // Second pass: temp -> source (copy back)
-        using (var builder = renderGraph.AddRasterRenderPass<PassData>("ScreenShake Copy Back", out var passData, _profilingSampler))
+        // Setup pass data
+        passData.material = _material;
+        passData.intensity = _screenShakeSettings.intensity.value;
+        passData.strengthX = _screenShakeSettings.shakeStrengthX.value;
+        passData.strengthY = _screenShakeSettings.shakeStrengthY.value;
+        passData.offsetPercentage = _screenShakeSettings.offsetPercentage.value;
+        passData.randomShake = _screenShakeSettings.randomShake.value;
+        passData.noiseScale = _screenShakeSettings.noiseScale.value;
+        passData.noiseSpeed = _screenShakeSettings.noiseSpeed.value;
+        passData.offsetX = _screenShakeSettings.offsetX.value;
+        passData.offsetY = _screenShakeSettings.offsetY.value;
+        passData.radiusX = _screenShakeSettings.radiusX.value;
+        passData.radiusY = _screenShakeSettings.radiusY.value;
+        passData.edge = _screenShakeSettings.edge.value;
+        passData.source = source;
+        passData.tempTex = tempTex;
+
+        // Declare inputs and outputs
+        builder.UseTexture(source, AccessFlags.Read);
+        builder.SetRenderAttachment(tempTex, 0, AccessFlags.Write);
+
+        // Set render function
+        builder.SetRenderFunc((ShakePassData data, RasterGraphContext context) =>
         {
-            passData.material = _material;
-            passData.intensity = _screenShakeSettings.intensity.value;
-            passData.strengthX = _screenShakeSettings.shakeStrengthX.value;
-            passData.strengthY = _screenShakeSettings.shakeStrengthY.value;
-            passData.offsetPercentage = _screenShakeSettings.offsetPercentage.value;
-            passData.randomShake = _screenShakeSettings.randomShake.value;
-            passData.noiseScale = _screenShakeSettings.noiseScale.value;
-            passData.noiseSpeed = _screenShakeSettings.noiseSpeed.value;
-            passData.offsetX = _screenShakeSettings.offsetX.value;
-            passData.offsetY = _screenShakeSettings.offsetY.value;
-            passData.radiusX = _screenShakeSettings.radiusX.value;
-            passData.radiusY = _screenShakeSettings.radiusY.value;
-            passData.edge = _screenShakeSettings.edge.value;
-            passData.sourceTexture = tempTexture;
-            passData.destTexture = resourceData.activeColorTexture;
+            data.material.SetFloat(IntensityID, data.intensity);
+            data.material.SetFloat(StrengthXID, data.strengthX);
+            data.material.SetFloat(StrengthYID, data.strengthY);
+            data.material.SetFloat(OffsetPercentageID, data.offsetPercentage);
+            data.material.SetFloat(RandomShakeID, data.randomShake ? 1f : 0f);
+            data.material.SetFloat(NoiseScaleID, data.noiseScale);
+            data.material.SetFloat(NoiseSpeedID, data.noiseSpeed);
+            data.material.SetFloat(ShapeOffsetXID, data.offsetX);
+            data.material.SetFloat(ShapeOffsetYID, data.offsetY);
+            data.material.SetFloat(ShapeRadiusXID, data.radiusX);
+            data.material.SetFloat(ShapeRadiusYID, data.radiusY);
+            data.material.SetFloat(ShapeEdgeID, data.edge);
 
-            builder.UseTexture(tempTexture, AccessFlags.Read);
-            builder.UseTexture(resourceData.activeColorTexture, AccessFlags.Write);
-            builder.SetRenderFunc(static (PassData data, RasterGraphContext context) =>
-            {
-                ExecuteBlitPass(data, context.cmd);
-            });
-        }
-    }
+            Blitter.BlitTexture(context.cmd, data.source, Vector2.one, data.material, 0);
+        });
 
-    private TextureDesc CreateTextureDescriptor(RenderTextureDescriptor cameraDesc)
-    => new(cameraDesc.width, cameraDesc.height)
-    {
-        colorFormat = cameraDesc.graphicsFormat,
-        depthBufferBits = 0,
-        name = "ScreenShakeTemp"
-    };
-
-    private static void ExecuteBlitPass(PassData data, RasterCommandBuffer cmd)
-    {
-        data.material.SetTexture(MainTexID, data.sourceTexture);
-        data.material.SetFloat(IntensityID, data.intensity);
-        data.material.SetFloat(StrengthXID, data.strengthX);
-        data.material.SetFloat(StrengthYID, data.strengthY);
-        data.material.SetFloat(OffsetPercentageID, data.offsetPercentage);
-        data.material.SetFloat(RandomShakeID, data.randomShake == true ? 1f : 0f);
-        data.material.SetFloat(NoiseScaleID, data.noiseScale);
-        data.material.SetFloat(NoiseSpeedID, data.noiseSpeed);
-        data.material.SetFloat(ShapeOffsetXID, data.offsetX);
-        data.material.SetFloat(ShapeOffsetYID, data.offsetY);
-        data.material.SetFloat(ShapeRadiusXID, data.radiusX);
-        data.material.SetFloat(ShapeRadiusYID, data.radiusY);
-        data.material.SetFloat(ShapeEdgeID, data.edge);
-
-        Blitter.BlitTexture(cmd, Vector4.one, data.material, 0);
+        resourceData.cameraColor = source;
     }
 
     public void Dispose()
     {
         if (_material == null) return;
-
         CoreUtils.Destroy(_material);
         _material = null;
     }

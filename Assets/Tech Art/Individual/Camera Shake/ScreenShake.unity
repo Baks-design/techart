@@ -543,13 +543,13 @@ MonoBehaviour:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 1227047618}
-  m_Enabled: 1
+  m_Enabled: 0
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 554a52e12ffb5314e8fa11a03c967625, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::ScreenShakeController
-  fallbackPercentage: 13.4
-  fallbackDeadzone: 0.0412
+  falloffPercentage: 6
+  fallbackDeadzone: 0.03
   volume: {fileID: 1227047619}
 --- !u!1 &2084997170
 GameObject:
