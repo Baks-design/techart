@@ -44,7 +44,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 554a52e12ffb5314e8fa11a03c967625, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::ScreenShakeController
-  screenShakeFeature: {fileID: 4796815637616218546, guid: 4159d5caf4c37f448ae2ce9ad7b5a194, type: 2}
+  screenShakeFeature: {fileID: -7899155946866477510, guid: 756f3c4d609c9ed47be1462ef913ed58, type: 2}
   falloffPercentage: 5.8
   fallbackDeadzone: 0.0331
   shakeCurve:

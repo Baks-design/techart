@@ -143,6 +143,7 @@ MonoBehaviour:
   directionalLight: {fileID: 3772247744143514348}
   cloudDistortionSpeedDir: {x: -0.01, y: 0.01}
   cloudLayerSpeedDir: {x: 0.003, y: 0.001}
+  isShadowsCurrentActive: 1
   isBackAndForth: 0
   cloudShadowsSpeed: 0.005
   cloudShadowsSineWaveSpeed: 2

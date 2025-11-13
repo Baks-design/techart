@@ -39,15 +39,15 @@ Material:
     m_Ints: []
     m_Floats:
     - _Intensity: 1
-    - _NoiseScale: 17.4
-    - _NoiseSpeed: 9.2
-    - _OffsetPercentage: 6.9
+    - _NoiseScale: 1
+    - _NoiseSpeed: 1
+    - _OffsetPercentage: 1
     - _RandomShake: 1
-    - _ShapeEdge: 1
-    - _ShapeOffsetX: -0.5
-    - _ShapeOffsetY: -0.5
-    - _ShapeRadiusX: 0.034
-    - _ShapeRadiusY: 0.039
+    - _ShapeEdge: 1.89
+    - _ShapeOffsetX: 0.82
+    - _ShapeOffsetY: 0.67
+    - _ShapeRadiusX: 0.57
+    - _ShapeRadiusY: 0.55
     - _StrengthX: 0
     - _StrengthY: 0
     m_Colors: []

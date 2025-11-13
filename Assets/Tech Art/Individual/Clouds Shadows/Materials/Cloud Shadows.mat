@@ -49,7 +49,7 @@ Material:
     m_Ints: []
     m_Floats:
     - _BACK_AND_FORTH: 1
-    - _CloudShadowsSpeed: 0.2629957
+    - _CloudShadowsSpeed: 0.058504444
     - _Cutoff_Secondary: 0.478
     - _DistortScale: 10
     - _DistortSpeed: 0.02
