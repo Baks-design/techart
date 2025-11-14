@@ -11,7 +11,7 @@
     "CpuMaxTargetX32": 0,
     "CpuMinTargetX64": 0,
     "CpuMaxTargetX64": 0,
-    "OptimizeFor": 1,
+    "OptimizeFor": 0,
     "FloatMode": 0
   }
 }

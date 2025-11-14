@@ -1,4 +1,6 @@
 using System.Collections.Generic;
+using Unity.Collections;
+using Unity.Jobs;
 using UnityEngine;
 using UnityEngine.Rendering;
 using Pool = UnityEngine.Pool;
@@ -13,7 +15,6 @@ public class AfterImageEffect : MonoBehaviour
         public float fadeTimer;
         public float disableTime;
         public bool scheduledForDisable;
-        public Coroutine fadeCoroutine;
 
         public void Reset()
         {
@@ -23,7 +24,7 @@ public class AfterImageEffect : MonoBehaviour
             gameObject.SetActive(false);
         }
     }
-    
+
     [Header("References")]
     [SerializeField] private PlayerMovement playerMovement;
     [SerializeField] private GameObject presetObj;
@@ -42,19 +43,26 @@ public class AfterImageEffect : MonoBehaviour
     private Material[] originalMaterials;
     private Transform myTransform;
     private Matrix4x4 matrix;
-    private Transform poolParent;
     private float timer;
     private bool hasSkinRenderers = false;
     private bool hasMeshRenderers = false;
     private readonly int _FadeId = Shader.PropertyToID("_Fade");
     private readonly int _ColorId = Shader.PropertyToID("_Color");
     private readonly List<AfterImageInstance> activeInstances = new();
+    private NativeArray<float> fadeTimers;
+    private NativeArray<float> disableTimes;
+    private NativeArray<bool> scheduledForDisableFlags;
+    private NativeArray<bool> instancesToRemove;
+    private NativeArray<float> fadeValues;
+    private JobHandle fadeUpdateJobHandle;
+    private bool fadeUpdateJobScheduled = false;
 
     private void Start()
     {
         GetComponents();
         SetUpRenderers();
         InitializeObjectPool();
+        InitializeJobData();
     }
 
     private void GetComponents()
@@ -86,18 +94,25 @@ public class AfterImageEffect : MonoBehaviour
             originalMaterials[skinRenderers.Length + i] = meshRenderers[i].material;
     }
 
+    private void InitializeJobData()
+    {
+        var capacity = poolSize * 2;
+        fadeTimers = new NativeArray<float>(capacity, Allocator.Persistent);
+        disableTimes = new NativeArray<float>(capacity, Allocator.Persistent);
+        scheduledForDisableFlags = new NativeArray<bool>(capacity, Allocator.Persistent);
+        instancesToRemove = new NativeArray<bool>(capacity, Allocator.Persistent);
+        fadeValues = new NativeArray<float>(capacity, Allocator.Persistent);
+    }
+
     private void InitializeObjectPool()
     {
-        poolParent = new GameObject("AfterImagePool").transform;
-        //poolParent.SetParent(transform); 
-    
         objectPool = new(
             createFunc: CreatePooledItem,
             actionOnGet: OnTakeFromPool,
             actionOnRelease: OnReturnedToPool,
             actionOnDestroy: OnDestroyPoolObject,
             defaultCapacity: poolSize,
-            maxSize: poolSize * 2 
+            maxSize: poolSize * 2
         );
 
         var prewarmInstances = new List<AfterImageInstance>();
@@ -109,6 +124,7 @@ public class AfterImageEffect : MonoBehaviour
 
     private AfterImageInstance CreatePooledItem()
     {
+        var poolParent = new GameObject("AfterImagePool").transform;
         var obj = Instantiate(presetObj);
         obj.name = $"AfterImage_{objectPool.CountAll}";
         obj.transform.SetParent(poolParent);
@@ -151,7 +167,23 @@ public class AfterImageEffect : MonoBehaviour
 
     private void LateUpdate()
     {
-        UpdateAfterImageFades();
+        // Complete any scheduled fade jobs
+        if (fadeUpdateJobScheduled)
+        {
+            fadeUpdateJobHandle.Complete();
+            fadeUpdateJobScheduled = false;
+            ApplyFadeJobResults();
+        }
+
+        // Update fades
+        if (activeInstances.Count > 0)
+        {
+            // Only use jobs when we have enough instances to benefit from parallelism
+            if (activeInstances.Count >= 8)
+                UpdateFadesWithJobs();
+            else
+                UpdateAfterImageFadesMainThread();
+        }
 
         timer -= Time.deltaTime;
         if (timer < 0f && playerMovement.IsMoving && playerMovement.IsRunning)
@@ -161,7 +193,57 @@ public class AfterImageEffect : MonoBehaviour
         }
     }
 
-    private void UpdateAfterImageFades()
+    private void UpdateFadesWithJobs()
+    {
+        // Prepare data for fade update job
+        for (var i = 0; i < activeInstances.Count; i++)
+        {
+            fadeTimers[i] = activeInstances[i].fadeTimer;
+            disableTimes[i] = activeInstances[i].disableTime;
+            scheduledForDisableFlags[i] = activeInstances[i].scheduledForDisable;
+        }
+
+        // Schedule fade update job
+        var fadeJob = new UpdateFadeJob
+        {
+            deltaTime = Time.deltaTime,
+            fadeSpeed = fadeSpeed,
+            currentTime = Time.time,
+            fadeTimers = fadeTimers,
+            disableTimes = disableTimes,
+            scheduledForDisableFlags = scheduledForDisableFlags,
+            instancesToRemove = instancesToRemove,
+            fadeValues = fadeValues,
+            instanceCount = activeInstances.Count
+        };
+
+        fadeUpdateJobHandle = fadeJob.Schedule();
+        fadeUpdateJobScheduled = true;
+    }
+
+    private void ApplyFadeJobResults()
+    {
+        // Apply fade results and remove instances that need to be removed
+        for (var i = activeInstances.Count - 1; i >= 0; i--)
+        {
+            if (i < fadeTimers.Length)
+            {
+                // Update instance data from job results
+                activeInstances[i].fadeTimer = fadeTimers[i];
+                activeInstances[i].renderer.material.SetFloat(_FadeId, fadeValues[i]);
+
+                // Check if instance should be removed
+                if (instancesToRemove[i])
+                {
+                    var instance = activeInstances[i];
+                    activeInstances.RemoveAt(i);
+                    objectPool.Release(instance);
+                }
+            }
+        }
+    }
+
+    private void UpdateAfterImageFadesMainThread()
     {
         for (var i = activeInstances.Count - 1; i >= 0; i--)
         {
@@ -195,7 +277,7 @@ public class AfterImageEffect : MonoBehaviour
         SetupAfterImageAppearance(instance);
         PositionAfterImage(instance);
 
-        activeInstances.Add(instance); 
+        activeInstances.Add(instance);
     }
 
     private void SetupAfterImageMesh(AfterImageInstance instance)
@@ -213,6 +295,7 @@ public class AfterImageEffect : MonoBehaviour
                 combineIndex++;
             }
         }
+
         if (hasMeshRenderers)
         {
             for (var i = 0; i < meshRenderers.Length; i++)
@@ -244,15 +327,58 @@ public class AfterImageEffect : MonoBehaviour
         instance.disableTime = Time.time + disableDelay;
     }
 
-    private void PositionAfterImage(AfterImageInstance instance) 
+    private void PositionAfterImage(AfterImageInstance instance)
     => instance.gameObject.transform.SetPositionAndRotation(myTransform.position, myTransform.rotation);
 
     private void OnDestroy()
     {
+        // Complete any pending jobs before cleanup
+        if (fadeUpdateJobScheduled)
+            fadeUpdateJobHandle.Complete();
+
+        // Dispose NativeArrays
+        if (fadeTimers.IsCreated) fadeTimers.Dispose();
+        if (disableTimes.IsCreated) disableTimes.Dispose();
+        if (scheduledForDisableFlags.IsCreated) scheduledForDisableFlags.Dispose();
+        if (instancesToRemove.IsCreated) instancesToRemove.Dispose();
+        if (fadeValues.IsCreated) fadeValues.Dispose();
+
         if (combine == null) return;
 
         foreach (var combineInstance in combine)
             if (combineInstance.mesh != null)
                 Destroy(combineInstance.mesh);
+    }
+}
+
+// Job for updating fades
+public struct UpdateFadeJob : IJob
+{
+    public float deltaTime;
+    public float fadeSpeed;
+    public float currentTime;
+
+    public NativeArray<float> fadeTimers;
+    public NativeArray<float> disableTimes;
+    public NativeArray<bool> scheduledForDisableFlags;
+    public NativeArray<bool> instancesToRemove;
+    public NativeArray<float> fadeValues;
+    public int instanceCount;
+
+    public void Execute()
+    {
+        for (var i = 0; i < instanceCount; i++)
+        {
+            if (i >= fadeTimers.Length) break;
+
+            // Update fade timer
+            var newFadeTimer = fadeTimers[i] - (deltaTime * fadeSpeed);
+            fadeTimers[i] = newFadeTimer;
+            fadeValues[i] = newFadeTimer;
+
+            // Check if instance should be removed
+            var shouldRemove = newFadeTimer <= 0f || (scheduledForDisableFlags[i] && currentTime >= disableTimes[i]);
+            instancesToRemove[i] = shouldRemove;
+        }
     }
 }

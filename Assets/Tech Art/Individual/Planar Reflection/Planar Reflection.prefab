@@ -52,5 +52,5 @@ MonoBehaviour:
   hideReflectionCamera: 1
   reflectSkybox: 1
   reflectionPlaneOffset: 0
-  volumeSize: {x: 60, y: 60, z: 60}
+  volumeSize: {x: 25, y: 20, z: 25}
   blendDistance: 1

@@ -11,6 +11,7 @@ GameObject:
   - component: {fileID: 7822543109946296137}
   - component: {fileID: 3849371703072144298}
   - component: {fileID: 6673182570740470244}
+  - component: {fileID: 6859379987265886103}
   m_Layer: 3
   m_Name: Water Trails
   m_TagString: Untagged
@@ -4854,3 +4855,23 @@ ParticleSystemRenderer:
   m_MeshWeighting2: 1
   m_MeshWeighting3: 1
   m_MaskInteraction: 0
+--- !u!114 &6859379987265886103
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 8462717379449680060}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: e96d0dcfba456394aabb66df984d8266, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::SetRipplesEffect
+  rt: {fileID: 8400000, guid: 1570d65ebb686fa48b7285eb9b3d7eb0, type: 2}
+  target: {fileID: 0}
+  ripplesParticleSystem: {fileID: 3849371703072144298}
+  cameraHeight: 10
+  cullingMask:
+    serializedVersion: 2
+    m_Bits: 8
+  movementThreshold: 0.01

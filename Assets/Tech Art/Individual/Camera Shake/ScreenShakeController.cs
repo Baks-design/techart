@@ -1,5 +1,6 @@
 using System;
 using UnityEngine;
+using UnityEngine.InputSystem;
 using UnityEngine.Rendering.Universal;
 
 public class ScreenShakeController : MonoBehaviour
@@ -49,8 +50,16 @@ public class ScreenShakeController : MonoBehaviour
 
     private void Update()
     {
+        ShakeDebug();
         UpdateShake();
         ApplyStrengthFalloff();
+    }
+
+    private void ShakeDebug()
+    {
+        if (!Mouse.current.leftButton.wasPressedThisFrame) return;
+
+        StartShake(1f, 1f, 1f, 1f);
     }
 
     private void UpdateShake()

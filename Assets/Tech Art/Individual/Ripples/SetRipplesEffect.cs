@@ -1,82 +1,141 @@
 using UnityEngine;
+using UnityEngine.Rendering.Universal;
 
-[RequireComponent(typeof(Camera))]
 public class SetRipplesEffect : MonoBehaviour
 {
+    [Header("Reference Settings")]
     [SerializeField] private RenderTexture rt;
     [SerializeField] private Transform target;
-    [SerializeField] private bool updateEveryFrame = true;
-
+    [SerializeField] private ParticleSystem ripplesParticleSystem;
+    [Header("Camera Settings")]
+    [SerializeField] private LayerMask cullingMask = 1 << 8; // Assuming "Ripples" is layer 8
     private Camera _camera;
-    private Transform _transform;
-    private Vector3 _lastPosition;
-
-    private static readonly int _GlobalEffectRTId = Shader.PropertyToID("_GlobalEffectRT");
-    private static readonly int _OrthographicCamSizeId = Shader.PropertyToID("_OrthographicCamSize");
-    private static readonly int _PositionId = Shader.PropertyToID("_Position");
+    private Vector3 _lastTargetPosition;
+    private bool _isParticlesPlaying = false;
+    private const float movementThreshold = 0.01f;
+    private readonly int _GlobalEffectRTId = Shader.PropertyToID("_GlobalEffectRT");
+    private readonly int _OrthographicCamSizeId = Shader.PropertyToID("_OrthographicCamSize");
+    private readonly int _PositionId = Shader.PropertyToID("_Position");
 
     private void Awake()
     {
-        _transform = transform;
-        _camera = GetComponent<Camera>();
-
+        InitializeCamera();
         ValidateComponents();
-        SetupShaderProperties();
+        SetComponents();
+    }
+
+    private void InitializeCamera()
+    {
+        var go = new GameObject($"Ripples Camera [{GetInstanceID()}]", typeof(Camera))
+        {
+            hideFlags = HideFlags.HideInHierarchy
+        };
+        go.transform.SetPositionAndRotation(Vector3.zero, Quaternion.Euler(90f, 0f, 0f));
+
+        var camData = go.AddComponent<UniversalAdditionalCameraData>();
+        camData.requiresColorOption = CameraOverrideOption.On;
+        camData.requiresDepthOption = CameraOverrideOption.On;
+        camData.renderShadows = false;
+        camData.SetRenderer(0);
+
+        _camera = go.GetComponent<Camera>();
+        _camera.orthographic = true;
+        _camera.orthographicSize = 15f;
+        _camera.nearClipPlane = 0.3f;
+        _camera.farClipPlane = 100f;
+        _camera.cullingMask = cullingMask;
+        _camera.clearFlags = CameraClearFlags.SolidColor;
+        _camera.backgroundColor = Color.clear;
+        _camera.depth = -5;
+        _camera.enabled = true;
+        _camera.targetTexture = rt;
     }
 
     private void ValidateComponents()
     {
         if (rt == null)
-        {
             Debug.LogError("RenderTexture is not assigned in the inspector!", this);
-            enabled = false;
-            return;
-        }
         if (_camera == null)
-        {
-            Debug.LogError("Camera component not found!", this);
-            enabled = false;
-            return;
-        }
-        if (!_camera.orthographic)
-            Debug.LogWarning("Camera is not orthographic. _OrthographicCamSize might not behave as expected.", this);
+            Debug.LogError("Camera component not found and failed to create!", this);
+        if (ripplesParticleSystem == null)
+            Debug.LogError("Ripples Particle System is not assigned in the inspector!", this);
         if (target == null)
-        {
             Debug.LogWarning("Target is not assigned. Using self as target.", this);
-            target = _transform;
-        }
     }
 
-    private void SetupShaderProperties()
+    private void SetComponents()
     {
         Shader.SetGlobalTexture(_GlobalEffectRTId, rt);
         Shader.SetGlobalFloat(_OrthographicCamSizeId, _camera.orthographicSize);
 
-        UpdateRipples();
-        _lastPosition = _transform.position;
+        if (ripplesParticleSystem != null)
+            ripplesParticleSystem.Stop(true, ParticleSystemStopBehavior.StopEmittingAndClear);
+
+        // Adjust orthographic size to maintain proper coverage
+        var cameraAspect = _camera.aspect;
+        var rtAspect = (float)rt.width / rt.height;
+        if (Mathf.Abs(cameraAspect - rtAspect) > 0.01f)
+        {
+            var originalSize = _camera.orthographicSize;
+            if (cameraAspect > rtAspect)
+                _camera.orthographicSize = originalSize * (cameraAspect / rtAspect);
+            else
+                _camera.orthographicSize = originalSize * (rtAspect / cameraAspect);
+
+            Shader.SetGlobalFloat(_OrthographicCamSizeId, _camera.orthographicSize);
+        }
+        else
+            Shader.SetGlobalFloat(_OrthographicCamSizeId, _camera.orthographicSize);
     }
 
-    private void LateUpdate()
-    {
-        if (!updateEveryFrame && !PositionChanged()) return;
-        
-        UpdateRipples();
-    }
+    private void Start() => InitPosition();
 
-    private bool PositionChanged() => Vector3.SqrMagnitude(_transform.position - _lastPosition) > 0.0001f;
+    private void InitPosition() => _lastTargetPosition = target.position;
+
+    private void LateUpdate() => UpdateRipples();
 
     private void UpdateRipples()
     {
-        var targetPosition = target.position;
-        _transform.position = new Vector3(targetPosition.x, _transform.position.y, targetPosition.z);
+        var currentTargetPosition = target.position;
 
-        Shader.SetGlobalVector(_PositionId, _transform.position);
-        _lastPosition = _transform.position;
+        Shader.SetGlobalVector(_PositionId, new Vector4(currentTargetPosition.x, currentTargetPosition.y, currentTargetPosition.z, 0f));
+
+        var movementSqrMagnitude = Vector3.SqrMagnitude(currentTargetPosition - _lastTargetPosition);
+        if (movementSqrMagnitude > movementThreshold * movementThreshold)
+        {
+            if (!_isParticlesPlaying)
+            {
+                ripplesParticleSystem.Play();
+                _isParticlesPlaying = true;
+            }
+        }
+        else
+        {
+            if (_isParticlesPlaying)
+            {
+                ripplesParticleSystem.Stop(true, ParticleSystemStopBehavior.StopEmitting);
+                _isParticlesPlaying = false;
+            }
+        }
+
+        _lastTargetPosition = currentTargetPosition;
     }
 
-    private void OnDisable()
+    private void OnDisable() => ResetSettings();
+
+    private void OnDestroy()
+    {
+        if (_camera != null) 
+            Destroy(_camera.gameObject);
+        ResetSettings();
+    }
+
+    private void ResetSettings()
     {
         Shader.SetGlobalTexture(_GlobalEffectRTId, null);
-        Shader.SetGlobalVector(_PositionId, Vector4.zero); 
+        Shader.SetGlobalVector(_PositionId, Vector4.zero);
+
+        ripplesParticleSystem.Stop(true, ParticleSystemStopBehavior.StopEmittingAndClear);
+        _isParticlesPlaying = false;
     }
 }

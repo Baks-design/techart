@@ -5,7 +5,11 @@ using System;
 using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.Rendering.Universal;
+using Unity.Collections;
+using Unity.Jobs;
+using Unity.Mathematics;
 using Object = UnityEngine.Object;
+using Unity.Burst;
 
 [ExecuteAlways, DisallowMultipleComponent, AddComponentMenu("Effects/Planar Reflection Volume")]
 public class PlanarReflectionVolume : MonoBehaviour
@@ -34,7 +38,82 @@ public class PlanarReflectionVolume : MonoBehaviour
     private readonly int _planarReflectionTextureId = Shader.PropertyToID("_PlanarReflectionTexture");
     private readonly int _planarReflectionBlendId = Shader.PropertyToID("_PlannerReflectionBlend");
 
+    // Job-related fields
+    private NativeArray<float3> _cameraLocalPosition;
+    private NativeArray<bool> _isInRange;
+    private NativeArray<float> _blendFactor;
+    private NativeArray<float4x4> _reflectionMatrix;
+    private bool _nativeArraysInitialized = false;
+
     public static event Action<ScriptableRenderContext, Camera> BeginPlanarReflections;
+
+    // Job struct for camera position calculations
+    [BurstCompile]
+    public struct CameraPositionJob : IJob
+    {
+        public float3 CameraWorldPosition;
+        public float4x4 VolumeWorldToLocal;
+        public NativeArray<float3> CameraLocalPosition;
+        public NativeArray<bool> IsInRange;
+        public NativeArray<float> BlendFactor;
+
+        public float3 HalfSize;
+        public float3 BlendHalfSize;
+        public float BlendDistance;
+
+        public void Execute()
+        {
+            // Convert camera position to local space of volume
+            var localPos = math.mul(VolumeWorldToLocal, new float4(CameraWorldPosition, 1f)).xyz;
+            CameraLocalPosition[0] = localPos;
+
+            // Check if camera is in blend range
+            bool inRange = math.abs(localPos.x) <= BlendHalfSize.x &&
+                          math.abs(localPos.y) <= BlendHalfSize.y &&
+                          math.abs(localPos.z) <= BlendHalfSize.z;
+            IsInRange[0] = inRange;
+
+            // Calculate blend factor
+            if (BlendDistance <= 0f)
+            {
+                bool inVolume = math.abs(localPos.x) <= HalfSize.x &&
+                               math.abs(localPos.y) <= HalfSize.y &&
+                               math.abs(localPos.z) <= HalfSize.z;
+                BlendFactor[0] = inVolume ? 0f : 1f;
+            }
+            else
+            {
+                var distanceX = math.max(0f, math.abs(localPos.x) - HalfSize.x);
+                var distanceY = math.max(0f, math.abs(localPos.y) - HalfSize.y);
+                var distanceZ = math.max(0f, math.abs(localPos.z) - HalfSize.z);
+
+                var maxDistance = math.max(distanceX, math.max(distanceY, distanceZ));
+                BlendFactor[0] = maxDistance <= 0f ? 0f : math.clamp(maxDistance / BlendDistance, 0f, 1f);
+            }
+        }
+    }
+
+    // Job struct for reflection matrix calculations
+    [BurstCompile]
+    public struct ReflectionMatrixJob : IJob
+    {
+        public float4 ReflectionPlane;
+        public NativeArray<float4x4> ReflectionMatrix;
+
+        public void Execute()
+        {
+            float x = ReflectionPlane.x, y = ReflectionPlane.y, z = ReflectionPlane.z, w = ReflectionPlane.w;
+
+            var matrix = new float4x4(
+                1F - 2F * x * x, -2F * x * y, -2F * x * z, -2F * w * x,
+                -2F * y * x, 1F - 2F * y * y, -2F * y * z, -2F * w * y,
+                -2F * z * x, -2F * z * y, 1F - 2F * z * z, -2F * w * z,
+                0F, 0F, 0F, 1F
+            );
+
+            ReflectionMatrix[0] = matrix;
+        }
+    }
 
     private void OnValidate()
     {
@@ -48,6 +127,20 @@ public class PlanarReflectionVolume : MonoBehaviour
     {
         _transform = transform;
         CacheVolumeBounds();
+        InitializeNativeArrays();
+    }
+
+    private void InitializeNativeArrays()
+    {
+        if (!_nativeArraysInitialized)
+        {
+            // Initialize native arrays for job communication
+            _cameraLocalPosition = new NativeArray<float3>(1, Allocator.Persistent);
+            _isInRange = new NativeArray<bool>(1, Allocator.Persistent);
+            _blendFactor = new NativeArray<float>(1, Allocator.Persistent);
+            _reflectionMatrix = new NativeArray<float4x4>(1, Allocator.Persistent);
+            _nativeArraysInitialized = true;
+        }
     }
 
     private void OnEnable()
@@ -55,6 +148,7 @@ public class PlanarReflectionVolume : MonoBehaviour
         RenderPipelineManager.beginCameraRendering += DoPlanarReflections;
         CacheVolumeBounds();
         UpdateTargetMaterial();
+        InitializeNativeArrays();
     }
 
     private void CacheVolumeBounds()
@@ -69,6 +163,7 @@ public class PlanarReflectionVolume : MonoBehaviour
         RenderPipelineManager.beginCameraRendering -= DoPlanarReflections;
         CleanUp();
         ResetMaterialBlend();
+        DisposeNativeArrays();
     }
 
     private void OnDestroy()
@@ -76,6 +171,19 @@ public class PlanarReflectionVolume : MonoBehaviour
         RenderPipelineManager.beginCameraRendering -= DoPlanarReflections;
         CleanUp();
         ResetMaterialBlend();
+        DisposeNativeArrays();
+    }
+
+    private void DisposeNativeArrays()
+    {
+        if (_nativeArraysInitialized)
+        {
+            if (_cameraLocalPosition.IsCreated) _cameraLocalPosition.Dispose();
+            if (_isInRange.IsCreated) _isInRange.Dispose();
+            if (_blendFactor.IsCreated) _blendFactor.Dispose();
+            if (_reflectionMatrix.IsCreated) _reflectionMatrix.Dispose();
+            _nativeArraysInitialized = false;
+        }
     }
 
     private void CleanUp()
@@ -107,7 +215,7 @@ public class PlanarReflectionVolume : MonoBehaviour
     private void ResetMaterialBlend()
     {
         if (_targetMaterial == null) return;
-        
+
         _targetMaterial.SetFloat(_planarReflectionBlendId, 1f);
     }
 
@@ -118,8 +226,31 @@ public class PlanarReflectionVolume : MonoBehaviour
         UpdateTargetMaterial();
         if (_targetMaterial == null) return;
 
-        var isInRange = IsCameraInRange(camera);
-        var blendFactor = GetBlendFactor(camera);
+        // Ensure native arrays are initialized
+        if (!_nativeArraysInitialized)
+            InitializeNativeArrays();
+
+        // Check if native arrays are valid
+        if (!_cameraLocalPosition.IsCreated || !_isInRange.IsCreated || !_blendFactor.IsCreated)
+            return;
+
+        // Schedule camera position job
+        var cameraPosJob = new CameraPositionJob
+        {
+            CameraWorldPosition = camera.transform.position,
+            VolumeWorldToLocal = _transform.worldToLocalMatrix,
+            CameraLocalPosition = _cameraLocalPosition,
+            IsInRange = _isInRange,
+            BlendFactor = _blendFactor,
+            HalfSize = _halfSize,
+            BlendHalfSize = _blendHalfSize,
+            BlendDistance = blendDistance
+        };
+
+        cameraPosJob.Run(); // Run immediately on main thread
+
+        bool isInRange = _isInRange[0];
+        float blendFactor = _blendFactor[0];
 
         if (!isInRange && _wasInRange)
         {
@@ -133,7 +264,7 @@ public class PlanarReflectionVolume : MonoBehaviour
 
         if (blendFactor >= 1f) return;
 
-        UpdateReflectionCamera(camera);
+        UpdateReflectionCameraWithJobs(camera, _cameraLocalPosition[0]);
         CreateReflectionTexture(camera);
 
         if (_reflectionTexture == null || _reflectionCamera == null) return;
@@ -183,46 +314,7 @@ public class PlanarReflectionVolume : MonoBehaviour
             _targetMaterial = _targetRenderer.sharedMaterial;
     }
 
-    private bool IsCameraInRange(Camera camera)
-    {
-        if (camera == null) return false;
-
-        var cameraLocalPos = _transform.InverseTransformPoint(camera.transform.position);
-
-        return Mathf.Abs(cameraLocalPos.x) <= _blendHalfSize.x &&
-               Mathf.Abs(cameraLocalPos.y) <= _blendHalfSize.y &&
-               Mathf.Abs(cameraLocalPos.z) <= _blendHalfSize.z;
-    }
-
-    private float GetBlendFactor(Camera camera)
-    {
-        if (camera == null) return 1f;
-        if (blendDistance <= 0f) return IsCameraInVolume(camera) ? 0f : 1f;
-
-        var cameraLocalPos = _transform.InverseTransformPoint(camera.transform.position);
-
-        var distanceX = Mathf.Max(0f, Mathf.Abs(cameraLocalPos.x) - _halfSize.x);
-        var distanceY = Mathf.Max(0f, Mathf.Abs(cameraLocalPos.y) - _halfSize.y);
-        var distanceZ = Mathf.Max(0f, Mathf.Abs(cameraLocalPos.z) - _halfSize.z);
-
-        var maxDistance = Mathf.Max(distanceX, Mathf.Max(distanceY, distanceZ));
-        if (maxDistance <= 0f) return 0f;
-
-        return Mathf.Clamp01(maxDistance / blendDistance);
-    }
-
-    private bool IsCameraInVolume(Camera camera)
-    {
-        if (camera == null) return false;
-
-        var cameraLocalPos = _transform.InverseTransformPoint(camera.transform.position);
-
-        return Mathf.Abs(cameraLocalPos.x) <= _halfSize.x &&
-               Mathf.Abs(cameraLocalPos.y) <= _halfSize.y &&
-               Mathf.Abs(cameraLocalPos.z) <= _halfSize.z;
-    }
-
-    private void UpdateReflectionCamera(Camera realCamera)
+    private void UpdateReflectionCameraWithJobs(Camera realCamera, float3 cameraLocalPos)
     {
         if (realCamera == null) return;
         if (_reflectionCamera == null)
@@ -238,8 +330,21 @@ public class PlanarReflectionVolume : MonoBehaviour
         var d = -Vector3.Dot(normal, pos);
         var reflectionPlane = new Vector4(normal.x, normal.y, normal.z, d);
 
-        var reflection = Matrix4x4.Scale(new Vector3(1f, -1f, 1f));
-        CalculateReflectionMatrix(ref reflection, reflectionPlane);
+        // Check if reflection matrix array is valid
+        if (!_reflectionMatrix.IsCreated)
+            return;
+
+        // Schedule reflection matrix job
+        var matrixJob = new ReflectionMatrixJob
+        {
+            ReflectionPlane = reflectionPlane,
+            ReflectionMatrix = _reflectionMatrix
+        };
+
+        matrixJob.Run(); // Run immediately on main thread
+
+        // Convert float4x4 to Matrix4x4 for compatibility with Unity's Camera API
+        var reflection = ConvertToMatrix4x4(_reflectionMatrix[0]);
 
         var oldPosition = realCamera.transform.position - new Vector3(0f, pos.y * 2f, 0f);
         _reflectionCamera.transform.position = ReflectPosition(oldPosition);
@@ -249,6 +354,17 @@ public class PlanarReflectionVolume : MonoBehaviour
         var clipPlane = CameraSpacePlane(_reflectionCamera, pos - Vector3.up * 0.1f, normal, 1f);
         _reflectionCamera.projectionMatrix = realCamera.CalculateObliqueMatrix(clipPlane);
         _reflectionCamera.cullingMask = reflectionLayer;
+    }
+
+    // Helper method to convert float4x4 to Matrix4x4
+    private Matrix4x4 ConvertToMatrix4x4(float4x4 f4x4)
+    {
+        return new Matrix4x4(
+            new Vector4(f4x4.c0.x, f4x4.c0.y, f4x4.c0.z, f4x4.c0.w),
+            new Vector4(f4x4.c1.x, f4x4.c1.y, f4x4.c1.z, f4x4.c1.w),
+            new Vector4(f4x4.c2.x, f4x4.c2.y, f4x4.c2.z, f4x4.c2.w),
+            new Vector4(f4x4.c3.x, f4x4.c3.y, f4x4.c3.z, f4x4.c3.w)
+        );
     }
 
     private void CreateReflectionTexture(Camera camera)
@@ -351,31 +467,6 @@ public class PlanarReflectionVolume : MonoBehaviour
                 dest.backgroundColor = Color.clear;
             }
         }
-    }
-
-    private static void CalculateReflectionMatrix(ref Matrix4x4 reflectionMatrix, Vector4 plane)
-    {
-        float x = plane.x, y = plane.y, z = plane.z, w = plane.w;
-
-        reflectionMatrix.m00 = 1F - 2F * x * x;
-        reflectionMatrix.m01 = -2F * x * y;
-        reflectionMatrix.m02 = -2F * x * z;
-        reflectionMatrix.m03 = -2F * w * x;
-
-        reflectionMatrix.m10 = -2F * y * x;
-        reflectionMatrix.m11 = 1F - 2F * y * y;
-        reflectionMatrix.m12 = -2F * y * z;
-        reflectionMatrix.m13 = -2F * w * y;
-
-        reflectionMatrix.m20 = -2F * z * x;
-        reflectionMatrix.m21 = -2F * z * y;
-        reflectionMatrix.m22 = 1F - 2F * z * z;
-        reflectionMatrix.m23 = -2F * w * z;
-
-        reflectionMatrix.m30 = 0F;
-        reflectionMatrix.m31 = 0F;
-        reflectionMatrix.m32 = 0F;
-        reflectionMatrix.m33 = 1F;
     }
 
     private static Vector3 ReflectPosition(Vector3 pos) => new(pos.x, -pos.y, pos.z);
